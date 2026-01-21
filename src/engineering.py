@@ -40,7 +40,7 @@ class FeatureEngineer:
             return pd.DataFrame(columns=['feature', 'vif_factor'])
 
         # Filter for numeric features only for VIF calculation
-        numeric_features = [f for f in features if sampled_df_pl[f].dtype in pl.NUMERIC_TYPES]
+        numeric_features = [f for f in features if sampled_df_pl[f].dtype in pl.NUMERIC_DTYPES]
         if not numeric_features:
             print("No numeric features found for VIF calculation among the provided features.")
             return pd.DataFrame(columns=['feature', 'vif_factor'])
@@ -119,7 +119,7 @@ if __name__ == '__main__':
     # Test VIF calculation (requires collecting data and numerical features)
     # Ensure the dataframe has numerical columns for VIF
     collected_df = lf_features.collect()
-    numerical_cols = [col for col in collected_df.columns if collected_df[col].dtype in pl.NUMERIC_TYPES]
+    numerical_cols = [col for col in collected_df.columns if collected_df[col].dtype in pl.NUMERIC_DTYPES]
     if 'receipt_id' in numerical_cols: numerical_cols.remove('receipt_id') # Remove ID columns if they are numeric
     if 'item_id' in numerical_cols: numerical_cols.remove('item_id')
 
@@ -130,7 +130,7 @@ if __name__ == '__main__':
         collected_df = collected_df.with_columns(pl.Series("dummy_feature_2", np.random.rand(len(collected_df))) * 5)
     
     # Update numerical_cols after adding dummy features
-    numerical_cols = [col for col in collected_df.columns if collected_df[col].dtype in pl.NUMERIC_TYPES]
+    numerical_cols = [col for col in collected_df.columns if collected_df[col].dtype in pl.NUMERIC_DTYPES]
     if 'receipt_id' in numerical_cols: numerical_cols.remove('receipt_id')
     if 'item_id' in numerical_cols: numerical_cols.remove('item_id')
     if 'price' in numerical_cols: numerical_cols.remove('price') # Often price is the target, not a VIF feature
