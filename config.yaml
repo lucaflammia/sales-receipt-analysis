@@ -1,0 +1,16 @@
+environment: local # Options: local, cloud
+
+local:
+  data_path: data/raw/  # Path for local data prototyping
+  sampling_rate: 0.1    # 10% sampling for ThinkPad T480
+  processed_data_path: data/processed/
+  models_path: models/
+
+cloud:
+  data_path: s3://sales-receipt-analysis/raw/ # Example S3 path for AWS
+  sampling_rate: 1.0    # 100% data for AWS instances
+  processed_data_path: s3://sales-receipt-analysis/processed/
+  models_path: s3://sales-receipt-analysis/models/
+
+# General settings
+random_state: 42

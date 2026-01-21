@@ -1,0 +1,23 @@
+{
+  "name": "Sales Receipt Analysis",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "settings": {
+    "python.pythonPath": "/usr/local/bin/python",
+    "python.languageServer": "Pylance",
+    "editor.formatOnSave": true,
+    "[python]": {
+      "editor.defaultFormatter": "ms-python.black-formatter"
+    }
+  },
+  "extensions": [
+    "ms-python.python",
+    "ms-toolsai.jupyter",
+    "charliermarsh.ruff",
+    "julienmc.polars-hex-viewer"
+  ],
+  "postCreateCommand": "pip install --upgrade pip && playwright install",
+  "remoteUser": "root"
+}
