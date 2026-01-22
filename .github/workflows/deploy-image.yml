@@ -24,6 +24,7 @@ jobs:
           ls -R 
           python -m pytest .
   build-and-push:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
