@@ -33,3 +33,4 @@ def test_polars_to_pandas_handoff():
   assert len(predictions) == 2
   assert isinstance(df_pandas, pd.DataFrame)
   print("✅ Smoke test passed: Polars to Pandas handoff is successful.")
+  
