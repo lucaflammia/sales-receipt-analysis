@@ -16,9 +16,8 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install polars pandas pyarrow pytest
-          # Note: We install only the light dependencies for quick testing
+          pip install -r requirements.txt
 
       - name: Run Unit Tests
         run: |
-          pytest tests/
+          python -m pytest .
