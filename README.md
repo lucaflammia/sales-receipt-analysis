@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This repository provides a robust framework for performing retail analytics on Italian GDO (Sales Receipt) data. It is designed to support a dual-workflow, allowing for efficient local prototyping on a ThinkPad T480 and scalable cloud production on AWS instances (with potential for GPU acceleration for LLM/Deep Learning tasks).
+This repository provides a framework for performing retail analytics on Italian GDO (Sales Receipt) data. It is designed to support a dual-workflow, allowing for efficient local prototyping on a work laptop and scalable cloud production on AWS instances (with potential for GPU acceleration for LLM/Deep Learning tasks).
 
 **Core Technologies:**
 - **Language:** Python 3.12 (standardized via DevContainers)
@@ -24,7 +24,7 @@ This project uses VS Code DevContainers for a consistent and reproducible develo
 
 1.  **Clone the Repository:**
     ```bash
-    git clone https://github.com/your-username/sales-receipt-analysis.git
+    git clone https://github.com/extendi/IBC-analisi-scontrini.git
     cd sales-receipt-analysis
     ```
 2.  **Open in VS Code:**
@@ -51,7 +51,7 @@ environment: local # Options: local, cloud
 
 local:
   data_path: data/raw/  # Path for local data prototyping
-  sampling_rate: 0.1    # 10% sampling for ThinkPad T480
+  sampling_rate: 0.1    # 10% sampling for work laptop
   processed_data_path: data/processed/
   models_path: models/
 
@@ -69,7 +69,7 @@ random_state: 42
 
 Simply change the `environment` key at the top of `config.yaml` to either `local` or `cloud`. The `main.py` script and other modules will automatically adjust their behavior (e.g., data paths, sampling rates) based on this setting.
 
--   **`local`:** Uses local file paths and a `sampling_rate` of `0.1` (10% of data) to optimize performance and memory usage on less powerful machines like the ThinkPad T480.
+-   **`local`:** Uses local file paths and a `sampling_rate` of `0.1` (10% of data) to optimize performance and memory usage on less powerful machines.
 -   **`cloud`:** Assumes a cloud environment (e.g., AWS S3 for data paths) and uses a `sampling_rate` of `1.0` (100% of data) for full-scale processing.
 
 ## Running the First Anomaly Detection Pass
@@ -118,12 +118,3 @@ README.md        # Project documentation
 requirements.txt # Python dependencies
 setup_project.sh # Initial project setup script
 ```
-
-## Next Steps
-
--   **Data Acquisition:** Replace the dummy data with actual Italian GDO receipt data.
--   **Further Feature Engineering:** Add more domain-specific features.
--   **ML Model Development:** Implement FP-Growth for association rule mining, refine IsolationForest, or explore other models.
--   **Ollama Integration:** Develop modules for interacting with Ollama and Llama 3 for receipt summarization.
--   **Cloud Deployment:** Implement logic for S3 data handling and deployment on AWS.
--   **Testing:** Write comprehensive unit and integration tests.
