@@ -47,6 +47,9 @@ RUN playwright install --with-deps
 # Copy the rest of the application code
 COPY . .
 
+# Connect a repo when publishing an image
+LABEL org.opencontainers.image.source https://github.com/extendi/IBC-analisi-scontrini
+
 # Expose any ports if necessary (e.g., for Jupyter, Streamlit)
 # EXPOSE 8888
 

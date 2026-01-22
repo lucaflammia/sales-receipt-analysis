@@ -42,6 +42,11 @@ This project uses VS Code DevContainers for a consistent and reproducible develo
     ```
     You should see Python 3.12 and Polars listed.
 
+    Then make sure that tests are initially valid with:
+    ```bash
+    python -m pytest tests/
+    ```
+
 ## Hardware Profiles and Configuration (`config.yaml`)
 
 The `config.yaml` file is central to managing environment-specific settings, particularly for switching between local prototyping and cloud production.
@@ -72,7 +77,7 @@ Simply change the `environment` key at the top of `config.yaml` to either `local
 -   **`local`:** Uses local file paths and a `sampling_rate` of `0.1` (10% of data) to optimize performance and memory usage on less powerful machines.
 -   **`cloud`:** Assumes a cloud environment (e.g., AWS S3 for data paths) and uses a `sampling_rate` of `1.0` (100% of data) for full-scale processing.
 
-## Running the First Anomaly Detection Pass
+## Running the Pipeline
 
 This project includes a starter implementation for anomaly detection using `IsolationForest` from `scikit-learn`.
 
@@ -90,31 +95,23 @@ This project includes a starter implementation for anomaly detection using `Isol
     -   Collect a sample of the data (based on `sampling_rate` in `config.yaml`).
     -   Calculate Variance Inflation Factor (VIF) for numerical features to check for multicollinearity.
     -   Train an `IsolationForest` model on selected features (`basket_size`, `basket_value`, `hour_of_day`, `day_of_week`).
-    -   Add an `anomaly_score` column to the processed data.
+    -   Add an `anomaly_score` column to the processed data (-1 for outliers, 1 for normal).
     -   Save the processed data to `data/processed/processed_receipts.parquet` (if in `local` environment).
 
-    You will see console output detailing the steps, resource usage (RAM/CPU), VIF results, and a preview of the data with anomaly scores.
+3. **Running Tests:**
+    Before pushing code, always run the local tests:
+    ```bash
+    pytest tests/
+    ```
 
 ## Project Structure
 
 ```
-.devcontainer/
-├── Dockerfile
-└── devcontainer.json
-.github/
-└── workflows/ # CI/CD workflows (e.g., GitHub Actions)
-data/
-├── processed/ # Cleaned, transformed, and feature-engineered data
-└── raw/       # Original, immutable raw data
-models/          # Trained machine learning models
-notebooks/       # Jupyter notebooks for exploration and prototyping
-src/
-├── engineering.py # Feature engineering logic (VIF, shopping mission)
-└── ingestion.py   # Data ingestion and loading
-tests/           # Unit and integration tests
-config.yaml      # Environment-specific configuration
-main.py          # Main entry point for the data pipeline
-README.md        # Project documentation
-requirements.txt # Python dependencies
-setup_project.sh # Initial project setup script
+.github/workflows/   # CI/CD: Automated testing and Docker builds
+data/                # Raw (immutable) and Processed (Parquet) data
+src/                 # Core logic (e.g., engineering.py, ingestion.py)
+tests/               # Pytest suite (Smoke tests, unit tests)
+config.yaml          # Environment toggle (local vs cloud)
+main.py              # Pipeline entry point
+requirements.txt     # Managed dependencies
 ```
