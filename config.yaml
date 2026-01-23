@@ -7,10 +7,11 @@ local:
   models_path: models/
 
 cloud:
-  data_path: s3://sales-receipt-analysis/raw/ # Example S3 path for AWS
-  sampling_rate: 1.0    # 100% data for AWS instances
-  processed_data_path: s3://sales-receipt-analysis/processed/
-  models_path: s3://sales-receipt-analysis/models/
+  data_path: s3://ibc-sales-data-579747662833/
+  sampling_rate: 1.0  # Full data processing for AWS
+  processed_data_path: s3://ibc-sales-data-579747662833/processed/
+  models_path: s3://ibc-sales-data-579747662833/models/
+  region: eu-south-1
 
 # General settings
 random_state: 42
