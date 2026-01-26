@@ -67,7 +67,8 @@ def test_data_format_validation(mock_messy_csv, monkeypatch):
   reason="S3 integration test skipped: No AWS_SESSION_TOKEN found in environment",
 )
 def test_s3_tree_connection():
-  # ... (Your original code remains here for when you have API access)
+  # Original code remains here as is, but skipped during local testing.
+  # Uncomment and implement your S3 connection tests as needed.
   # config = load_config()
   # # Ensure environment is set to cloud for this test
   # config["environment"] = "cloud"
