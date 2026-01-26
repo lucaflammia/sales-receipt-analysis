@@ -9,13 +9,13 @@ logger = logging.getLogger(__name__)
 # --- Mocking the Cloud Environment locally ---
 @pytest.fixture
 def mock_messy_csv(tmp_path):
-    """Creates a local messy CSV that mimics the S3 structure."""
-    folder = tmp_path / "venduto_dettagli"
-    folder.mkdir()
-    csv_file = folder / "messy_data.csv"
+  """Creates a local messy CSV that mimics the S3 structure."""
+  folder = tmp_path / "venduto_dettagli"
+  folder.mkdir()
+  csv_file = folder / "messy_data.csv"
 
-    # Simulating: Semi-colon sep, bad rows, and mixed types
-    content = (
+  # Simulating: Semi-colon sep, bad rows, and mixed types
+  content = (
     "id;product;price;date\n"  # Header
     "1;Apple;0.50;2024-01-01\n"  # Good row
     "2;Banana;0.30;2024-01-02\n"  # Good row
@@ -23,8 +23,8 @@ def mock_messy_csv(tmp_path):
     "3;Cherry;0.75;2024-01-03;EXTRA\n"  # BAD ROW (Too many columns)
     "4;Date;FREE;2024-01-04\n"  # MESSY DATA (String in numeric column)
   )
-    csv_file.write_text(content)
-    return str(csv_file)
+  csv_file.write_text(content)
+  return str(csv_file)
 
 
 def test_data_format_validation(mock_messy_csv, monkeypatch):
