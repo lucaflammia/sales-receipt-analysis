@@ -1,3 +1,4 @@
+import os
 import time
 import logging
 import pytest
@@ -5,6 +6,10 @@ from src.ingestion import load_config, load_data
 
 logger = logging.getLogger(__name__)
 
+pytest.mark.skipif(
+  os.getenv("AWS_SESSION_TOKEN") is None,
+  reason="S3 integration test skipped: No AWS_SESSION_TOKEN found in environment"
+)
 def test_s3_tree_connection():
   config = load_config()
   # Ensure environment is set to cloud for this test

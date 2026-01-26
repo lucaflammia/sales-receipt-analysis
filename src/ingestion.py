@@ -30,6 +30,11 @@ def get_s3_fs():
   token = os.getenv("AWS_SESSION_TOKEN")
   region = os.getenv("AWS_DEFAULT_REGION", "eu-south-1")
 
+  if not key or not secret:
+    raise EnvironmentError(
+      "Missing AWS Credentials. Check GitHub Secrets or .env file."
+    )
+
   return s3fs.S3FileSystem(
     key=key,
     secret=secret,
