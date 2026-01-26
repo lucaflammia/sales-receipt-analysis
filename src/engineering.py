@@ -1,8 +1,13 @@
 import polars as pl
 import pandas as pd
 import logging
+import os
+import matplotlib.pyplot as plt
+import seaborn as sns
 import numpy as np
-from sklearn.ensemble import IsolationForest
+from sklearn.ensemble import IsolationForest, RandomForestRegressor
+from sklearn.linear_model import LassoCV
+from sklearn.preprocessing import StandardScaler
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.tools import add_constant
 
@@ -19,16 +24,53 @@ class FeatureEngineer:
           return df.collect()
       return df
 
+  def select_features_rf(self, df, features, target, top_n=3):
+    eager_df = self._ensure_eager(df).drop_nulls()
+    
+    X = eager_df.select(features).to_pandas()
+    y = eager_df.select(target).to_pandas().values.ravel()
+
+    # Replace Infinity with NaN and then drop them
+    # Random Forest cannot handle 'inf'
+    X = X.replace([np.inf, -np.inf], np.nan).dropna()
+    y = y[X.index] # Ensure y matches the cleaned X rows
+
+    rf = RandomForestRegressor(n_estimators=100, random_state=self.random_state)
+    rf.fit(X, y)
+    return pd.Series(rf.feature_importances_, index=features).sort_values(ascending=False).head(top_n).to_dict()
+
+  def select_features_lasso(self, df, features, target):
+    eager_df = self._ensure_eager(df).drop_nulls()
+    X = eager_df.select(features).to_pandas()
+    y = eager_df.select(target).to_pandas().values.ravel()
+
+    # CRITICAL: Clean Infinity here too
+    X = X.replace([np.inf, -np.inf], np.nan).dropna()
+    y = y[X.index]
+
+    X_scaled = StandardScaler().fit_transform(X)
+    lasso = LassoCV(cv=5, random_state=self.random_state).fit(X_scaled, y)
+    coefs = pd.Series(lasso.coef_, index=features)
+    return coefs[coefs.abs() > 1e-3].to_dict()
+
+  def get_consensus_features(self, rf_results: dict, lasso_results: dict):
+    """Returns features identified as important by both RF and Lasso."""
+    rf_set = set(rf_results.keys())
+    lasso_set = set(lasso_results.keys())
+
+    consensus = list(rf_set.intersection(lasso_set))
+
+    logging.info(f"Consensus features identified: {consensus}")
+    return consensus
+
   def calculate_vif(
     self,
     df: pl.DataFrame | pl.LazyFrame,
     features: list,
-    sample_fraction: float = 0.1,
-  ):
+    sample_fraction: float = 0.1):
     """Calculates VIF with data cleaning for statsmodels compatibility."""
     logging.info(f"Calculating VIF for features: {features}")
 
-    # 1. Sample and Materialize
     df_sampled = df.sample(fraction=sample_fraction, seed=self.random_state)
     df_pd = self._ensure_eager(df_sampled).select(features).to_pandas()
 
@@ -87,7 +129,6 @@ class FeatureEngineer:
     # Freshness Logic
     lf = lf.with_columns((pl.col("Weight") > 0).alias("is_fresh"))
 
-    # Aggregation
     agg_lf = lf.group_by("receipt_id").agg([
       pl.col("line_total").sum().alias("basket_value"),
       pl.col("Product SKU").n_unique().alias("basket_size"),
@@ -103,20 +144,14 @@ class FeatureEngineer:
 
     # Update this section in extract_shopping_mission_features
     agg_lf = agg_lf.with_columns([
-      (pl.col("basket_value") / pl.col("basket_size")).alias("value_per_item"),
-      
-      # Use .fill_nan(0) and .replace(np.inf, 0) logic
-      (pl.col("fresh_weight_sum") / pl.col("total_weight"))
-        .fill_nan(0)
-        .alias("freshness_weight_ratio"),
-          
-      (pl.col("fresh_value_sum") / pl.col("basket_value"))
-        .fill_nan(0)
-        .alias("freshness_value_ratio")
+    (pl.col("basket_value") / pl.col("basket_size")).alias("value_per_item"),
+    # Use .fill_nan(0) and .replace(np.inf, 0) logic
+    (pl.col("fresh_weight_sum") / pl.col("total_weight")).fill_nan(0).alias("freshness_weight_ratio"),
+    (pl.col("fresh_value_sum") / pl.col("basket_value")).fill_nan(0).alias("freshness_value_ratio")
     ]).with_columns([
-        # Secondary guardrail for potential Infinity
-        pl.col("freshness_weight_ratio").cast(pl.Float64).fill_nan(0),
-        pl.col("freshness_value_ratio").cast(pl.Float64).fill_nan(0)
+      # Secondary guardrail for potential Infinity
+      pl.col("freshness_weight_ratio").cast(pl.Float64).fill_nan(0),
+      pl.col("freshness_value_ratio").cast(pl.Float64).fill_nan(0)
     ])
 
     return agg_lf
@@ -131,3 +166,14 @@ class FeatureEngineer:
 
     scores = model.decision_function(data_for_model)
     return eager_df.with_columns(pl.Series(name="anomaly_score", values=scores))
+
+  def plot_anomalies(self, df, features, path="plots/anomalies.png"):
+    os.makedirs("plots", exist_ok=True)
+    pdf = df.sample(n=min(len(df), 2000)).to_pandas()
+    plt.figure(figsize=(10, 6))
+    sns.scatterplot(
+        data=pdf, x=features[0], y=features[1], hue="anomaly_score", palette="rocket"
+    )
+    plt.title("Anomaly Detection Results")
+    plt.savefig(path)
+    plt.close()

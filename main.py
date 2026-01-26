@@ -60,9 +60,6 @@ def main():
     [pl.lit(np.random.uniform(0.5, 50.0)).alias("Price")]
   )
 
-  # Rename columns for consistency
-  # raw_data_lazy = raw_data_lazy.rename({"dataVendita": "Date", "quantitaPezzi": "Amount", "oraVendita": "Time", "scontrinoIdentificativo": "receipt_id", "barcodeCodice": "Product SKU"})
-
   raw_data_lazy = raw_data_lazy.rename(
     {
       "scontrinoIdentificativo": "receipt_id",
@@ -80,36 +77,56 @@ def main():
   feature_engineer = FeatureEngineer()
   processed_data_lazy = feature_engineer.extract_shopping_mission_features(raw_data_lazy)
 
-  # VIF Calculation
-  vif_features = [
-    "basket_value",
+  logger.info("Materializing data...")    
+  eager_processed_data = processed_data_lazy.collect()
+  log_resource_usage("Data Materialized")
+
+  # --- 3. Feature Selection (Consensus) ---
+  features_to_test = [
     "basket_size",
     "hour",
-    "has_fresh_produce",
+    "day_of_week",
     "freshness_weight_ratio",
     "freshness_value_ratio",
+    "has_fresh_produce",
   ]
 
-  logger.info("Materializing data for VIF...")
-  eager_processed_data = processed_data_lazy.collect()
-  log_resource_usage("Data Collected")
-  
-  os.makedirs("models", exist_ok=True)
-
-  vif_results = feature_engineer.calculate_vif(
-    eager_processed_data,
-    features=vif_features,
-    sample_fraction=env_config["sampling_rate"],
+  logger.info("Running Feature Selection (RF & Lasso)...")
+  rf_important = feature_engineer.select_features_rf(
+    eager_processed_data, features=features_to_test, target="basket_value", top_n=3
   )
-  logger.info("VIF Results:", vif_results)
-
-  # Anomaly Detection
-  anomaly_features = ["basket_value", "basket_size"]
-  eager_processed_data = feature_engineer.add_anomaly_score(
-    eager_processed_data,
-    features=anomaly_features,
-    model_path="models/iforest.joblib",
+  lasso_important = feature_engineer.select_features_lasso(
+    eager_processed_data, features=features_to_test, target="basket_value"
   )
+
+  consensus_features = feature_engineer.get_consensus_features(
+    rf_important, lasso_important
+  )
+  logger.info(f"Consensus Features: {consensus_features}")
+
+  # --- Validation & Anomalies ---
+  if consensus_features:
+    # Check VIF only on chosen features to ensure stability
+    vif_results = feature_engineer.calculate_vif(
+      eager_processed_data, features=consensus_features
+      )
+    logger.info(f"Final VIF Results: {vif_results}")
+
+    # Anomaly Detection
+    os.makedirs("models", exist_ok=True)
+    eager_processed_data = feature_engineer.add_anomaly_score(
+      eager_processed_data,
+      features=consensus_features,
+      model_path="models/iforest.joblib",
+    )
+
+    # Visual Verification
+    if len(consensus_features) >= 2:
+      feature_engineer.plot_anomalies(eager_processed_data, consensus_features)
+  else:
+    logger.warning(
+      "No consensus features found. Using fallback features for anomalies."
+    )
 
   # Save to Parquet
   output_dir = env_config["processed_data_path"]
