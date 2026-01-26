@@ -1,1 +1,5 @@
-*.pyc
+.env
+sync_secrets.sh
+update_env.py
+credentials.json
+__pycache__/

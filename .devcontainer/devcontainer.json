@@ -4,21 +4,34 @@
     "dockerfile": "Dockerfile",
     "context": ".."
   },
-  "settings": {
-    "python.pythonPath": "/usr/local/bin/python",
-    "python.languageServer": "Pylance",
-    "editor.formatOnSave": true,
-    "[python]": {
-      "editor.defaultFormatter": "ms-python.black-formatter"
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.languageServer": "Pylance",
+        "editor.formatOnSave": true,
+        "python.analysis.extraPaths": [
+          "${containerWorkspaceFolder}"
+        ],
+        "python.autoComplete.extraPaths": [
+          "${containerWorkspaceFolder}"
+        ],
+        "[python]": {
+          "editor.defaultFormatter": "ms-python.black-formatter"
+        }
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff",
+        "julienmc.polars-hex-viewer",
+        "ms-python.black-formatter"
+      ]
     }
   },
-  "extensions": [
-    "ms-python.python",
-    "ms-toolsai.jupyter",
-    "charliermarsh.ruff",
-    "julienmc.polars-hex-viewer"
-  ],
-  "postCreateCommand": "pip install -r requirements.txt",
-  "postCreateCommand": "pip install --upgrade pip && playwright install",
+  "containerEnv": {
+    "PYTHONPATH": "${containerWorkspaceFolder}"
+  },
+  "postCreateCommand": "pip install --upgrade pip && pip install -r requirements.txt && playwright install",
   "remoteUser": "root"
 }
