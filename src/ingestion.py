@@ -65,61 +65,61 @@ def validate_source(path, is_cloud=False):
   return files
 
 def load_data(config, file_pattern=None):
-  """
+    """
     Ingests data using Polars Lazy API.
     Supports both S3 (cloud) and local environments for CSV files.
   """
-  env = config["environment"]
-  env_config = config[env]
-  data_path = env_config["data_path"]
+    env = config["environment"]
+    env_config = config[env]
+    data_path = env_config["data_path"]
 
-  # Ensure the path ends with a slash for clean joining
-  if not data_path.endswith("/"):
-    data_path += "/"
+    # Ensure the path ends with a slash for clean joining
+    if not data_path.endswith("/"):
+        data_path += "/"
 
-  # Build the full search path
-  search_path = f"{data_path}{file_pattern}"
+    # Build the full search path
+    search_path = f"{data_path}{file_pattern}"
 
-  if env == "cloud":
-    logger.info(f"☁️ Attempting Cloud Ingestion: {search_path}")
+    if env == "cloud":
+        logger.info(f"☁️ Attempting Cloud Ingestion: {search_path}")
 
-    pq_pattern = (
+        pq_pattern = (
       file_pattern.replace(".csv", ".parquet") if file_pattern else "*.parquet"
     )
-    pq_search_path = f"{data_path}{pq_pattern}"
-    storage_options={"file_system": get_s3_fs()}
+        pq_search_path = f"{data_path}{pq_pattern}"
+        storage_options={"file_system": get_s3_fs()}
 
-    try:
-      logger.info(f"🔍 Checking for Parquet files: {pq_search_path}")
-      validate_source(pq_search_path, is_cloud=True)
+        try:
+            logger.info(f"🔍 Checking for Parquet files: {pq_search_path}")
+            validate_source(pq_search_path, is_cloud=True)
 
-      logger.info(f"✨ Found Parquet! Scanning: {pq_search_path}")
-      return pl.scan_parquet(
+            logger.info(f"✨ Found Parquet! Scanning: {pq_search_path}")
+            return pl.scan_parquet(
         pq_search_path, storage_options=storage_options
       )
 
-    except (FileNotFoundError, Exception) as e:
-      logger.warning(
+        except (FileNotFoundError, Exception) as e:
+            logger.warning(
         f"⚠️ Parquet not found or inaccessible: {e}. Falling back to CSV..."
       )
 
-      # --- Fallback to CSV ---
-      csv_search_path = pq_search_path.replace(".parquet", ".csv")
+            # --- Fallback to CSV ---
+            csv_search_path = pq_search_path.replace(".parquet", ".csv")
 
-      fs = get_s3_fs()
-      files = fs.glob(csv_search_path)
+            fs = get_s3_fs()
+            files = fs.glob(csv_search_path)
 
-      if not files:
-        raise FileNotFoundError(f"No CSV files found at {csv_search_path}")
+            if not files:
+                raise FileNotFoundError(f"No CSV files found at {csv_search_path}")
 
-      target_file = files[0]
-      logger.info(f"📄 Opening S3 Stream for: {target_file}")
+            target_file = files[0]
+            logger.info(f"📄 Opening S3 Stream for: {target_file}")
 
-      # Use the fs object to open the file as a stream.
-      # This bypasses Polars' attempt to look at the local disk.
-      # We use read_csv(...).lazy() because scan_csv requires a path string.
-      with fs.open(target_file, mode="rb") as f:
-        return pl.read_csv(
+            # Use the fs object to open the file as a stream.
+            # This bypasses Polars' attempt to look at the local disk.
+            # We use read_csv(...).lazy() because scan_csv requires a path string.
+            with fs.open(target_file, mode="rb") as f:
+                return pl.read_csv(
           f,
           separator=";",
           infer_schema_length=1000,
@@ -127,14 +127,20 @@ def load_data(config, file_pattern=None):
           rechunk=True,
         ).lazy()
 
-  else:
-    logger.info(f"🏠 Attempting Local Ingestion: {search_path}")
+    else:
+        logger.info(f"🏠 Attempting Local Ingestion: {search_path}")
 
-    # Validate Local files
-    validate_source(search_path, is_cloud=False)
+        # Validate Local files
+        validate_source(search_path, is_cloud=False)
 
-    # Lazy Scan Local CSV
-    return pl.scan_csv(search_path, infer_schema_length=1000)
+        # Lazy Scan Local CSV
+        return pl.scan_csv(
+            search_path,
+            separator=";",
+            ignore_errors=True,  # Drops rows with too few columns
+            truncate_ragged_lines=True,  # Clips rows with too many columns
+            infer_schema_length=1000,
+        )
 
 if __name__ == '__main__':
   logging.basicConfig(
