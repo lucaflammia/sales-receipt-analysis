@@ -2,14 +2,14 @@ environment: local # Options: local, cloud
 
 local:
   data_path: data/raw/  # Path for local data prototyping
-  sampling_rate: 0.1    # 10% sampling for ThinkPad T480
+  sampling_rate: 1.0 # Full data processing for local if allowed
   processed_data_path: data/processed/
   models_path: models/
 
 cloud:
   data_path: s3://ibc-sales-data-579747662833/
   sampling_rate: 1.0  # Full data processing for AWS
-  processed_data_path: s3://ibc-sales-data-579747662833/processed/
+  processed_data_path: s3://ibc-sales-data-579747662833/analisi_scontrini/
   models_path: s3://ibc-sales-data-579747662833/models/
   region: eu-south-1
 

@@ -1,145 +1,133 @@
 import polars as pl
 import pandas as pd
+import logging
+import numpy as np
+from sklearn.ensemble import IsolationForest
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.tools import add_constant
-import numpy as np
+
+logger = logging.getLogger(__name__)
+
 
 class FeatureEngineer:
-    """Handles feature engineering for sales receipt data."""
+  def __init__(self, random_state=42):
+      self.random_state = random_state
 
-    def __init__(self, random_state=42):
-        self.random_state = random_state
+  def _ensure_eager(self, df):
+      """Helper to ensure we are working with a Polars DataFrame (Eager)."""
+      if isinstance(df, pl.LazyFrame):
+          return df.collect()
+      return df
 
-    def calculate_vif(self, df: pl.DataFrame, features: list[str], sample_fraction: float = 0.1) -> pd.DataFrame:
-        """ 
-        Calculates Variance Inflation Factor (VIF) for selected features. 
-        Samples data into memory for statsmodels compatibility.
-        
-        Args:
-            df (pl.DataFrame): Polars DataFrame containing the data.
-            features (list[str]): List of column names to calculate VIF for.
-            sample_fraction (float): Fraction of data to sample for VIF calculation. 
-                                     Used to manage memory for statsmodels.
-        Returns:
-            pd.DataFrame: A Pandas DataFrame with VIF scores for each feature.
-        """
-        if not features:
-            return pd.DataFrame(columns=['feature', 'vif_factor'])
+  def calculate_vif(
+    self,
+    df: pl.DataFrame | pl.LazyFrame,
+    features: list,
+    sample_fraction: float = 0.1,
+  ):
+    """Calculates VIF with data cleaning for statsmodels compatibility."""
+    logging.info(f"Calculating VIF for features: {features}")
 
-        print(f"Calculating VIF for {len(features)} features on a {sample_fraction*100}% sample...")
+    # 1. Sample and Materialize
+    df_sampled = df.sample(fraction=sample_fraction, seed=self.random_state)
+    df_pd = self._ensure_eager(df_sampled).select(features).to_pandas()
 
-        # Sample the data and convert to Pandas for statsmodels
-        # Ensure the sample is collected if the input is a LazyFrame
-        if isinstance(df, pl.LazyFrame):
-            sampled_df_pl = df.sample(fraction=sample_fraction, seed=self.random_state).collect()
-        else:
-            sampled_df_pl = df.sample(fraction=sample_fraction, seed=self.random_state)
+    # VIF Guardrail: Remove NaNs and Infs
+    # Ratios (like fresh_weight / total_weight) often produce NaNs or Inf
+    df_pd = df_pd.replace([np.inf, -np.inf], np.nan).dropna()
 
-        if sampled_df_pl.is_empty():
-            print("Warning: Sampled DataFrame is empty, cannot calculate VIF.")
-            return pd.DataFrame(columns=['feature', 'vif_factor'])
+    if df_pd.empty or len(df_pd) < len(features) + 1:
+      logging.warning("Not enough clean data points for VIF calculation.")
+      return {}
 
-        # Filter for numeric features only for VIF calculation
-        numeric_features = [f for f in features if sampled_df_pl[f].dtype in pl.NUMERIC_DTYPES]
-        if not numeric_features:
-            print("No numeric features found for VIF calculation among the provided features.")
-            return pd.DataFrame(columns=['feature', 'vif_factor'])
+    # Standard VIF Calculation
+    X = add_constant(df_pd)
+    vif_data = pd.DataFrame()
+    vif_data["feature"] = X.columns
+    vif_data["VIF"] = [
+      variance_inflation_factor(X.values, i) for i in range(X.shape[1])
+    ]
 
-        sampled_df_pd = sampled_df_pl.select(numeric_features).to_pandas()
+    return (
+      vif_data[vif_data["feature"] != "const"]
+      .set_index("feature")["VIF"]
+      .to_dict()
+    )
 
-        # Add a constant to the DataFrame for VIF calculation
-        X = add_constant(sampled_df_pd)
+  def calculate_pearson_matrix(self, df: pl.DataFrame | pl.LazyFrame, features: list):
+    """Calculates Pearson correlation natively in Polars."""
+    eager_df = self._ensure_eager(df)
+    return eager_df.select(features).corr()
 
-        vif_data = pd.DataFrame()
-        vif_data["feature"] = X.columns
-        vif_data["vif_factor"] = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
+  def extract_shopping_mission_features(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+    logging.info("Extracting shopping mission features...")
 
-        # Exclude the constant term from the results
-        vif_data = vif_data[vif_data['feature'] != 'const']
-        return vif_data.reset_index(drop=True)
+    # Ensure Weight is handled (Standardized Name)
+    lf = lf.with_columns(
+      pl.col("Weight").fill_null(0.0).cast(pl.Float64)
+    )
 
-    def extract_shopping_mission_features(self, lf: pl.LazyFrame) -> pl.LazyFrame:
-        """ 
-        Extracts 'Shopping Mission' features from the lazy frame.
-        Includes Basket Size, Basket Value, and Timestamp features.
-        
-        Args:
-            lf (pl.LazyFrame): The input Polars LazyFrame containing receipt data.
-            
-        Returns:
-            pl.LazyFrame: A new LazyFrame with added shopping mission features.
-        """
-        print("Extracting shopping mission features...")
-        
-        # Ensure 'timestamp' column is of datetime type
-        lf = lf.with_columns(pl.col("timestamp").str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S").alias("timestamp"))
+    # Temporal Features (Standardized Names)
+    lf = lf.with_columns([
+      pl.col("time_str").str.to_time(format="%H:%M:%S", strict=False).alias("time_obj"),
+      pl.col("date_str").str.to_date(format="%Y-%m-%d", strict=False).alias("date_obj")
+    ]).with_columns([
+      pl.col("time_obj").dt.hour().fill_null(0).alias("hour"),
+      pl.col("date_obj").dt.weekday().fill_null(1).alias("day_of_week"),
+      pl.col("date_obj").dt.month().fill_null(1).alias("month"),
+      pl.col("date_obj").dt.year().fill_null(2024).alias("year"),
+    ])
 
-        # Basket Size (number of items per receipt)
-        # Basket Value (sum of prices per receipt)
-        lf = lf.group_by("receipt_id").agg(
-            pl.col("item_id").count().alias("basket_size"),
-            pl.col("price").sum().alias("basket_value"),
-            pl.col("timestamp").first().alias("receipt_timestamp") # Keep one timestamp per receipt
-        ).pipe(lambda df: df.join(lf, on="receipt_id", how="left")) # Join back to original to keep item-level detail
+    # Peak Pressure
+    lf = lf.with_columns(
+      pl.when((pl.col("hour").is_between(8, 10)) | (pl.col("hour").is_between(12, 14)) | (pl.col("hour").is_between(17, 19)))
+      .then(pl.lit("peak")).otherwise(pl.lit("off-peak")).alias("peak_hour_pressure")
+    )
 
-        # Timestamp features
-        lf = lf.with_columns(
-            pl.col("receipt_timestamp").dt.hour().alias("hour_of_day"),
-            pl.col("receipt_timestamp").dt.weekday().alias("day_of_week"), # Monday=1, Sunday=7
-            pl.col("receipt_timestamp").dt.week().alias("week_of_year"),
-            pl.col("receipt_timestamp").dt.month().alias("month"),
-            pl.col("receipt_timestamp").dt.year().alias("year")
-        )
+    # Freshness Logic
+    lf = lf.with_columns((pl.col("Weight") > 0).alias("is_fresh"))
 
-        return lf
+    # Aggregation
+    agg_lf = lf.group_by("receipt_id").agg([
+      pl.col("line_total").sum().alias("basket_value"),
+      pl.col("Product SKU").n_unique().alias("basket_size"),
+      pl.col("is_fresh").any().cast(pl.Int8).alias("has_fresh_produce"),
+      pl.col("Weight").filter(pl.col("is_fresh")).sum().alias("fresh_weight_sum"),
+      pl.col("Weight").sum().alias("total_weight"),
+      pl.col("line_total").filter(pl.col("is_fresh")).sum().alias("fresh_value_sum"),
+      pl.first("hour"),
+      pl.first("day_of_week"),
+      pl.first("month"),
+      pl.first("year")
+    ])
 
-if __name__ == '__main__':
-    # Example usage for testing
-    # Create a dummy LazyFrame
-    dummy_data = {
-        'item_id': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-        'receipt_id': [101, 101, 102, 102, 102, 103, 103, 104, 104, 105],
-        'price': [10.5, 5.2, 12.0, 3.1, 7.8, 20.0, 15.5, 8.9, 1.2, 5.0],
-        'timestamp': [
-            '2023-01-01 10:00:00', '2023-01-01 10:05:00', '2023-01-01 11:00:00',
-            '2023-01-01 11:10:00', '2023-01-01 11:15:00', '2023-01-02 09:00:00',
-            '2023-01-02 09:15:00', '2023-01-02 14:00:00', '2023-01-02 14:05:00',
-            '2023-01-03 16:00:00'
-        ]
-    }
-    lf = pl.LazyFrame(dummy_data)
+    # Update this section in extract_shopping_mission_features
+    agg_lf = agg_lf.with_columns([
+      (pl.col("basket_value") / pl.col("basket_size")).alias("value_per_item"),
+      
+      # Use .fill_nan(0) and .replace(np.inf, 0) logic
+      (pl.col("fresh_weight_sum") / pl.col("total_weight"))
+        .fill_nan(0)
+        .alias("freshness_weight_ratio"),
+          
+      (pl.col("fresh_value_sum") / pl.col("basket_value"))
+        .fill_nan(0)
+        .alias("freshness_value_ratio")
+    ]).with_columns([
+        # Secondary guardrail for potential Infinity
+        pl.col("freshness_weight_ratio").cast(pl.Float64).fill_nan(0),
+        pl.col("freshness_value_ratio").cast(pl.Float64).fill_nan(0)
+    ])
 
-    feature_engineer = FeatureEngineer()
-    
-    # Test feature extraction
-    lf_features = feature_engineer.extract_shopping_mission_features(lf)
-    print("Features extracted (collected for display):")
-    print(lf_features.head(5).collect())
+    return agg_lf
 
-    # Test VIF calculation (requires collecting data and numerical features)
-    # Ensure the dataframe has numerical columns for VIF
-    collected_df = lf_features.collect()
-    numerical_cols = [col for col in collected_df.columns if collected_df[col].dtype in pl.NUMERIC_DTYPES]
-    if 'receipt_id' in numerical_cols: numerical_cols.remove('receipt_id') # Remove ID columns if they are numeric
-    if 'item_id' in numerical_cols: numerical_cols.remove('item_id')
+  def add_anomaly_score(self, df: pl.DataFrame | pl.LazyFrame, features: list, model_path: str = None):
+    """Adds anomaly scores using Isolation Forest."""
+    eager_df = self._ensure_eager(df)
+    data_for_model = eager_df.select(features).to_pandas()
 
-    # Add some more numerical features for VIF if they don't exist
-    if 'dummy_feature_1' not in collected_df.columns:
-        collected_df = collected_df.with_columns(pl.Series("dummy_feature_1", np.random.rand(len(collected_df))) * 10)
-    if 'dummy_feature_2' not in collected_df.columns:
-        collected_df = collected_df.with_columns(pl.Series("dummy_feature_2", np.random.rand(len(collected_df))) * 5)
-    
-    # Update numerical_cols after adding dummy features
-    numerical_cols = [col for col in collected_df.columns if collected_df[col].dtype in pl.NUMERIC_DTYPES]
-    if 'receipt_id' in numerical_cols: numerical_cols.remove('receipt_id')
-    if 'item_id' in numerical_cols: numerical_cols.remove('item_id')
-    if 'price' in numerical_cols: numerical_cols.remove('price') # Often price is the target, not a VIF feature
+    model = IsolationForest(random_state=self.random_state)
+    model.fit(data_for_model)
 
-    print(f"Numerical columns for VIF: {numerical_cols}")
-
-    if numerical_cols:
-        vif_results = feature_engineer.calculate_vif(collected_df, numerical_cols)
-        print("VIF Results:")
-        print(vif_results)
-    else:
-        print("Not enough numerical columns to calculate VIF.")
+    scores = model.decision_function(data_for_model)
+    return eager_df.with_columns(pl.Series(name="anomaly_score", values=scores))
