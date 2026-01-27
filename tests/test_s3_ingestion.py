@@ -1,6 +1,5 @@
 import logging
 import polars as pl
-import pytest
 from src.ingestion import load_data
 
 logger = logging.getLogger(__name__)
@@ -40,4 +39,4 @@ def test_load_data_cloud_structure(mock_s3_pipeline, monkeypatch):
   # Verify the filesystem was interacted with correctly
   mock_fs.glob.assert_called_with("s3://mock-bucket/*.parquet")
 
-  logger.info(f"✅ Cloud structure test passed. Glob path verified.")
+  logger.info("✅ Cloud structure test passed. Glob path verified.")
