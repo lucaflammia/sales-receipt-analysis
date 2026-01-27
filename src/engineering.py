@@ -2,6 +2,7 @@ import polars as pl
 import pandas as pd
 import logging
 import os
+import itertools
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
@@ -128,6 +129,7 @@ class FeatureEngineer:
       pl.col("Weight").filter(pl.col("is_fresh")).sum().alias("fresh_weight_sum"),
       pl.col("Weight").sum().alias("total_weight"),
       pl.col("line_total").filter(pl.col("is_fresh")).sum().alias("fresh_value_sum"),
+      pl.col("avg_unit_price").mean().alias("avg_basket_unit_price"),
       pl.first("hour"),
       pl.first("day_of_week"),
       pl.first("month"),
@@ -135,12 +137,14 @@ class FeatureEngineer:
     ])
 
     agg_lf = agg_lf.with_columns([
-      (pl.col("basket_value") / pl.col("basket_size")).alias("value_per_item"),
+      (pl.col("basket_value") / pl.col("basket_size")).alias("basket_value_per_item"),
       (pl.col("discounted_item_count") / pl.col("basket_size")).fill_nan(0).alias("discount_ratio"),
       (pl.col("fresh_weight_sum") / pl.col("total_weight")).fill_nan(0).alias("freshness_weight_ratio"),
       (pl.col("fresh_value_sum") / pl.col("basket_value")).fill_nan(0).alias("freshness_value_ratio")
     ]).with_columns([
-      # Secondary guardrail for potential Infinity
+      # Guardrails for potential Infinity or NaN from divisions
+      pl.col("basket_value_per_item").fill_nan(0).fill_null(0),
+      pl.col("avg_basket_unit_price").fill_nan(0).fill_null(0),
       pl.col("freshness_weight_ratio").cast(pl.Float64).fill_nan(0),
       pl.col("freshness_value_ratio").cast(pl.Float64).fill_nan(0)
     ])
@@ -160,30 +164,74 @@ class FeatureEngineer:
 
   def plot_anomalies(self, df, features=None, path="plots/anomalies.png"):
     """
-    Plots Anomaly Detection results specifically for freshness_value_ratio 
-    vs basket_size to ensure consistency across runs.
+      Dynamically generates anomaly plots.
+      Creates a 3D scatter if 3 features are present,
+      and automatically generates pair-wise 2D scatter plots for all feature combinations.
     """
     os.makedirs("plots", exist_ok=True)
-    
-    # Materialize a sample for plotting
-    pdf = self._ensure_eager(df).sample(n=min(len(df), 2000), seed=self.random_state).to_pandas()
-    
-    plt.figure(figsize=(10, 6))
-    
-    # Forced mapping of X and Y axes
-    sns.scatterplot(
-      data=pdf, 
-      x="basket_size", 
-      y="freshness_value_ratio", 
-      hue="anomaly_score", 
-      palette="rocket"
+
+    eager_df = self._ensure_eager(df)
+    pdf = eager_df.sample(
+      n=min(len(eager_df), 2000), seed=self.random_state
+    ).to_pandas()
+
+    # Use provided consensus features or detect numeric columns excluding the score
+    plot_cols = (
+      features if features else [c for c in pdf.columns if c != "anomaly_score"]
     )
-    
-    plt.title("Anomaly Detection: Basket Size vs. Freshness Value Ratio")
-    plt.xlabel("Basket Size")
-    plt.ylabel("Freshness Value Ratio")
-    plt.grid(True, linestyle='--', alpha=0.6)
-    
+    num_features = len(plot_cols)
+
+    if num_features < 2:
+      logging.warning("Not enough features for dynamic plotting.")
+      return
+
+    # 3D Plotting (If exactly 3 features)
+    if num_features == 3:
+      path_3d = path.replace(".png", "_3d.png")
+      fig = plt.figure(figsize=(10, 7))
+      ax = fig.add_subplot(111, projection="3d")
+
+      scatter = ax.scatter(
+        pdf[plot_cols[0]],
+        pdf[plot_cols[1]],
+        pdf[plot_cols[2]],
+        c=pdf["anomaly_score"],
+        cmap="rocket",
+        alpha=0.6,
+      )
+
+      ax.set_xlabel(plot_cols[0].replace("_", " ").title())
+      ax.set_ylabel(plot_cols[1].replace("_", " ").title())
+      ax.set_zlabel(plot_cols[2].replace("_", " ").title())
+      plt.title("3D Anomaly Map (Consensus Features)")
+      fig.colorbar(scatter, ax=ax, label="Anomaly Score")
+      plt.savefig(path_3d)
+      plt.close()
+      logging.info(f"3D anomaly plot saved to {path_3d}")
+
+    # Dynamic 2D Pair-wise Plotting
+    # We generate all unique combinations of 2 features
+    combinations = list(itertools.combinations(plot_cols, 2))
+    num_plots = len(combinations)
+
+    fig, axes = plt.subplots(1, num_plots, figsize=(5 * num_plots, 5))
+    if num_plots == 1:
+      axes = [axes]  # Consistency for indexing
+
+    for i, (feat_x, feat_y) in enumerate(combinations):
+      sns.scatterplot(
+        data=pdf,
+        x=feat_x,
+        y=feat_y,
+        hue="anomaly_score",
+        palette="rocket",
+        ax=axes[i],
+      )
+      axes[i].set_title(f"{feat_y} vs {feat_x}")
+      axes[i].set_xlabel(feat_x.replace("_", " ").title())
+      axes[i].set_ylabel(feat_y.replace("_", " ").title())
+
+    plt.tight_layout()
     plt.savefig(path)
     plt.close()
-    logging.info(f"Anomaly plot saved to {path}")
+    logging.info(f"Dynamic multi-panel anomaly plot saved to {path}")

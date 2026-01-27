@@ -80,8 +80,15 @@ def main():
   raw_data_lazy = raw_data_lazy.with_columns(
     (pl.col("Price") < pl.col("Standard_Price")).alias("is_discounted")
   )
+  
+  raw_data_lazy = raw_data_lazy.with_columns(
+    pl.when(pl.col("Weight") > 0)
+    .then(pl.col("Price") / pl.col("Weight"))
+    .otherwise(pl.col("Price"))
+    .alias("avg_unit_price")
+  )
 
-  log_resource_usage("Data Ingested & Discount Flag Created")
+  log_resource_usage("Data Ingested & Unit Prices Calculated")
 
   # Feature Engineering
   feature_engineer = FeatureEngineer()
@@ -94,11 +101,14 @@ def main():
   # Feature Selection (Consensus)
   features_to_test = [
     "basket_size",
+    "basket_value_per_item",
+    "avg_basket_unit_price",
     "hour",
     "day_of_week",
     "freshness_weight_ratio",
     "freshness_value_ratio",
     "has_fresh_produce",
+    "discount_ratio",
   ]
 
   logger.info("Running Feature Selection (RF & Lasso)...")
@@ -108,11 +118,13 @@ def main():
   lasso_important = feature_engineer.select_features_lasso(
     eager_processed_data, features=features_to_test, target="basket_value"
   )
+  
+  logger.info(f"Full RF Importances: {rf_important}")
+  logger.info(f"Full Lasso Coefs: {lasso_important}")
 
   consensus_features = feature_engineer.get_consensus_features(
     rf_important, lasso_important
   )
-  logger.info(f"Consensus Features: {consensus_features}")
 
   # Validation & Anomalies
   if consensus_features:
