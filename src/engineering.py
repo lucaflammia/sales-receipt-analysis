@@ -65,14 +65,34 @@ class FeatureEngineer:
     return coefs[coefs.abs() > 1e-3].to_dict()
 
   def get_consensus_features(self, rf_results: dict, lasso_results: dict):
-    """Returns features identified as important by both RF and Lasso."""
+    """
+    Returns a dictionary of features identified by both models,
+    weighted by their normalized importance.
+    """
     rf_set = set(rf_results.keys())
     lasso_set = set(lasso_results.keys())
+    consensus_keys = list(rf_set.intersection(lasso_set))
 
-    consensus = list(rf_set.intersection(lasso_set))
+    # Normalize scores to 0-100 for comparison
+    consensus_with_scores = {}
+    
+    # Simple normalization helper
+    rf_max = max(rf_results.values()) if rf_results else 1
+    ls_max = max(abs(v) for v in lasso_results.values()) if lasso_results else 1
 
-    logging.info(f"Consensus features identified: {consensus}")
-    return consensus
+    for feat in consensus_keys:
+      # Average of normalized RF importance and normalized Lasso magnitude
+      score = (
+        (rf_results[feat] / rf_max * 50) + 
+        (abs(lasso_results[feat]) / ls_max * 50)
+      )
+      consensus_with_scores[feat] = round(score, 2)
+
+    # Sort by the new consensus score
+    sorted_consensus = dict(sorted(consensus_with_scores.items(), key=lambda x: x[1], reverse=True))
+    
+    logging.info(f"Consensus features with confidence scores: {sorted_consensus}")
+    return sorted_consensus
 
   def calculate_vif(self, df: pl.DataFrame | pl.LazyFrame, features: list, sample_fraction: float = 0.1):
     """Calculates VIF with data cleaning for statsmodels compatibility."""
@@ -174,9 +194,8 @@ class FeatureEngineer:
 
   def plot_anomalies(self, df, features=None, path="plots/anomalies.png"):
     """
-      Dynamically generates anomaly plots.
-      Creates a 3D scatter if 3 features are present,
-      and automatically generates pair-wise 2D scatter plots for all feature combinations.
+    Dynamically generates anomaly plots.
+    Handles 'features' as either a list of names or a dict of {name: score}.
     """
     os.makedirs("plots", exist_ok=True)
 
@@ -185,10 +204,16 @@ class FeatureEngineer:
       n=min(len(eager_df), 2000), seed=self.random_state
     ).to_pandas()
 
-    # Use provided consensus features or detect numeric columns excluding the score
-    plot_cols = (
-      features if features else [c for c in pdf.columns if c != "anomaly_score"]
-    )
+    if isinstance(features, dict):
+      plot_cols = list(features.keys())
+      feat_scores = list(features.values())
+    elif isinstance(features, list):
+      plot_cols = features
+      feat_scores = None
+    else:
+      plot_cols = [c for c in pdf.columns if c != "anomaly_score"]
+      feat_scores = None
+
     num_features = len(plot_cols)
 
     if num_features < 2:
@@ -210,9 +235,16 @@ class FeatureEngineer:
         alpha=0.6,
       )
 
-      ax.set_xlabel(plot_cols[0].replace("_", " ").title())
-      ax.set_ylabel(plot_cols[1].replace("_", " ").title())
-      ax.set_zlabel(plot_cols[2].replace("_", " ").title())
+      # Apply labels with confidence scores if available
+      if feat_scores:
+        ax.set_xlabel(f"{plot_cols[0].title()} ({feat_scores[0]}%)")
+        ax.set_ylabel(f"{plot_cols[1].title()} ({feat_scores[1]}%)")
+        ax.set_zlabel(f"{plot_cols[2].title()} ({feat_scores[2]}%)")
+      else:
+        ax.set_xlabel(plot_cols[0].title())
+        ax.set_ylabel(plot_cols[1].title())
+        ax.set_zlabel(plot_cols[2].title())
+
       plt.title("3D Anomaly Map (Consensus Features)")
       fig.colorbar(scatter, ax=ax, label="Anomaly Score")
       plt.savefig(path_3d)
@@ -220,13 +252,12 @@ class FeatureEngineer:
       logging.info(f"3D anomaly plot saved to {path_3d}")
 
     # Dynamic 2D Pair-wise Plotting
-    # We generate all unique combinations of 2 features
     combinations = list(itertools.combinations(plot_cols, 2))
     num_plots = len(combinations)
 
     fig, axes = plt.subplots(1, num_plots, figsize=(5 * num_plots, 5))
     if num_plots == 1:
-      axes = [axes]  # Consistency for indexing
+      axes = [axes]
 
     for i, (feat_x, feat_y) in enumerate(combinations):
       sns.scatterplot(
