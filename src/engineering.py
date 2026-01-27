@@ -25,8 +25,9 @@ class FeatureEngineer:
           return df.collect()
       return df
 
-  def select_features_rf(self, df, features, target, top_n=3):
-    eager_df = self._ensure_eager(df).drop_nulls()
+  def select_features_rf(self, df, features, target, top_n=5):
+    # Sort for determinism before converting to pandas
+    eager_df = self._ensure_eager(df).sort("receipt_id").drop_nulls()
     
     X = eager_df.select(features).to_pandas()
     y = eager_df.select(target).to_pandas().values.ravel()
@@ -34,11 +35,20 @@ class FeatureEngineer:
     # Replace Infinity with NaN and then drop them
     # Random Forest cannot handle 'inf'
     X = X.replace([np.inf, -np.inf], np.nan).dropna()
-    y = y[X.index] # Ensure y matches the cleaned X rows
+    y = y[X.index]
 
-    rf = RandomForestRegressor(n_estimators=100, random_state=self.random_state)
+    # Increased n_estimators for better stability
+    rf = RandomForestRegressor(
+      n_estimators=500, 
+      random_state=self.random_state,
+      n_jobs=-1 # Speed up with parallel processing
+    )
     rf.fit(X, y)
-    return pd.Series(rf.feature_importances_, index=features).sort_values(ascending=False).head(top_n).to_dict()
+    
+    importances = pd.Series(rf.feature_importances_, index=features).sort_values(ascending=False)
+    logger.info(f"Stable RF Importances:\n{importances.head(top_n)}")
+    
+    return importances.head(top_n).to_dict()
 
   def select_features_lasso(self, df, features, target):
     eager_df = self._ensure_eager(df).drop_nulls()
