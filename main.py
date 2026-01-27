@@ -29,6 +29,22 @@ def main():
   env_config = config[config["environment"]]
   file_name = "venduto_dettagli_20240601_20240831_AREA_382-100KROW.csv"
 
+  # --- DYNAMIC SAMPLING LOGIC ---
+  sampling_rate = env_config.get("sampling_rate")
+
+  if config["environment"] == "local":
+    file_path = os.path.join(env_config["data_path"], file_name)
+    if os.path.exists(file_path):
+      file_size_gb = os.path.getsize(file_path) / (1024**3)
+      if file_size_gb < 1.0:
+        logger.info(f"File size ({file_size_gb:.2f} GB) is < 1GB. Setting sampling_rate to 1.0")
+        sampling_rate = 1.0
+      else:
+        sampling_rate = 0.1
+
+  # If sampling_rate is still None (fallback)
+  sampling_rate = sampling_rate if sampling_rate is not None else 1.0
+  
   # Load Data with Italian Schema mapping
   try:
     raw_data_lazy = load_data(config, file_pattern=file_name)
@@ -57,6 +73,10 @@ def main():
         ],
       }
     )
+
+  # Apply Sampling if needed
+  if sampling_rate < 1.0:
+    raw_data_lazy = raw_data_lazy.sample(fraction=sampling_rate)
 
   raw_data_lazy = raw_data_lazy.rename(
     {
