@@ -7,6 +7,10 @@ import numpy as np
 from src.ingestion import load_config, load_data
 from src.engineering import FeatureEngineer
 
+logging.basicConfig(
+  level=logging.INFO,
+  format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 def log_resource_usage(stage: str):
@@ -54,12 +58,6 @@ def main():
       }
     )
 
-  # Add Random Price Guardrail & Map Columns
-  # We generate a random price between 0.5 and 50.0 for testing
-  raw_data_lazy = raw_data_lazy.with_columns(
-    [pl.lit(np.random.uniform(0.5, 50.0)).alias("Price")]
-  )
-
   raw_data_lazy = raw_data_lazy.rename(
     {
       "scontrinoIdentificativo": "receipt_id",
@@ -70,8 +68,20 @@ def main():
       "articoloCodice": "Product SKU",
     }
   )
+  
+  # Add Random Price & Standard Price Guardrail
+  # We generate a random price and a 'Standard' reference price for testing
+  raw_data_lazy = raw_data_lazy.with_columns([
+    pl.lit(np.random.uniform(0.5, 50.0)).alias("Price"),
+    pl.lit(np.random.uniform(0.5, 50.0)).alias("Standard_Price")
+  ])
+  
+  # Create the row-level Discount Flag
+  raw_data_lazy = raw_data_lazy.with_columns(
+    (pl.col("Price") < pl.col("Standard_Price")).alias("is_discounted")
+  )
 
-  log_resource_usage("Data Ingested & Price Generated")
+  log_resource_usage("Data Ingested & Discount Flag Created")
 
   # Feature Engineering
   feature_engineer = FeatureEngineer()
@@ -81,7 +91,7 @@ def main():
   eager_processed_data = processed_data_lazy.collect()
   log_resource_usage("Data Materialized")
 
-  # --- 3. Feature Selection (Consensus) ---
+  # Feature Selection (Consensus)
   features_to_test = [
     "basket_size",
     "hour",
@@ -104,12 +114,12 @@ def main():
   )
   logger.info(f"Consensus Features: {consensus_features}")
 
-  # --- Validation & Anomalies ---
+  # Validation & Anomalies
   if consensus_features:
     # Check VIF only on chosen features to ensure stability
     vif_results = feature_engineer.calculate_vif(
       eager_processed_data, features=consensus_features
-      )
+    )
     logger.info(f"Final VIF Results: {vif_results}")
 
     # Anomaly Detection

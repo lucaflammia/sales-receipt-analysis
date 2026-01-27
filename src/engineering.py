@@ -44,7 +44,7 @@ class FeatureEngineer:
     X = eager_df.select(features).to_pandas()
     y = eager_df.select(target).to_pandas().values.ravel()
 
-    # CRITICAL: Clean Infinity here too
+    # Clean Infinity
     X = X.replace([np.inf, -np.inf], np.nan).dropna()
     y = y[X.index]
 
@@ -63,11 +63,7 @@ class FeatureEngineer:
     logging.info(f"Consensus features identified: {consensus}")
     return consensus
 
-  def calculate_vif(
-    self,
-    df: pl.DataFrame | pl.LazyFrame,
-    features: list,
-    sample_fraction: float = 0.1):
+  def calculate_vif(self, df: pl.DataFrame | pl.LazyFrame, features: list, sample_fraction: float = 0.1):
     """Calculates VIF with data cleaning for statsmodels compatibility."""
     logging.info(f"Calculating VIF for features: {features}")
 
@@ -95,11 +91,6 @@ class FeatureEngineer:
       .set_index("feature")["VIF"]
       .to_dict()
     )
-
-  def calculate_pearson_matrix(self, df: pl.DataFrame | pl.LazyFrame, features: list):
-    """Calculates Pearson correlation natively in Polars."""
-    eager_df = self._ensure_eager(df)
-    return eager_df.select(features).corr()
 
   def extract_shopping_mission_features(self, lf: pl.LazyFrame) -> pl.LazyFrame:
     logging.info("Extracting shopping mission features...")
@@ -133,6 +124,7 @@ class FeatureEngineer:
       pl.col("line_total").sum().alias("basket_value"),
       pl.col("Product SKU").n_unique().alias("basket_size"),
       pl.col("is_fresh").any().cast(pl.Int8).alias("has_fresh_produce"),
+      pl.col("is_discounted").sum().alias("discounted_item_count"),
       pl.col("Weight").filter(pl.col("is_fresh")).sum().alias("fresh_weight_sum"),
       pl.col("Weight").sum().alias("total_weight"),
       pl.col("line_total").filter(pl.col("is_fresh")).sum().alias("fresh_value_sum"),
@@ -142,12 +134,11 @@ class FeatureEngineer:
       pl.first("year")
     ])
 
-    # Update this section in extract_shopping_mission_features
     agg_lf = agg_lf.with_columns([
-    (pl.col("basket_value") / pl.col("basket_size")).alias("value_per_item"),
-    # Use .fill_nan(0) and .replace(np.inf, 0) logic
-    (pl.col("fresh_weight_sum") / pl.col("total_weight")).fill_nan(0).alias("freshness_weight_ratio"),
-    (pl.col("fresh_value_sum") / pl.col("basket_value")).fill_nan(0).alias("freshness_value_ratio")
+      (pl.col("basket_value") / pl.col("basket_size")).alias("value_per_item"),
+      (pl.col("discounted_item_count") / pl.col("basket_size")).fill_nan(0).alias("discount_ratio"),
+      (pl.col("fresh_weight_sum") / pl.col("total_weight")).fill_nan(0).alias("freshness_weight_ratio"),
+      (pl.col("fresh_value_sum") / pl.col("basket_value")).fill_nan(0).alias("freshness_value_ratio")
     ]).with_columns([
       # Secondary guardrail for potential Infinity
       pl.col("freshness_weight_ratio").cast(pl.Float64).fill_nan(0),
@@ -167,13 +158,32 @@ class FeatureEngineer:
     scores = model.decision_function(data_for_model)
     return eager_df.with_columns(pl.Series(name="anomaly_score", values=scores))
 
-  def plot_anomalies(self, df, features, path="plots/anomalies.png"):
+  def plot_anomalies(self, df, features=None, path="plots/anomalies.png"):
+    """
+    Plots Anomaly Detection results specifically for freshness_value_ratio 
+    vs basket_size to ensure consistency across runs.
+    """
     os.makedirs("plots", exist_ok=True)
-    pdf = df.sample(n=min(len(df), 2000)).to_pandas()
+    
+    # Materialize a sample for plotting
+    pdf = self._ensure_eager(df).sample(n=min(len(df), 2000), seed=self.random_state).to_pandas()
+    
     plt.figure(figsize=(10, 6))
+    
+    # Forced mapping of X and Y axes
     sns.scatterplot(
-        data=pdf, x=features[0], y=features[1], hue="anomaly_score", palette="rocket"
+      data=pdf, 
+      x="basket_size", 
+      y="freshness_value_ratio", 
+      hue="anomaly_score", 
+      palette="rocket"
     )
-    plt.title("Anomaly Detection Results")
+    
+    plt.title("Anomaly Detection: Basket Size vs. Freshness Value Ratio")
+    plt.xlabel("Basket Size")
+    plt.ylabel("Freshness Value Ratio")
+    plt.grid(True, linestyle='--', alpha=0.6)
+    
     plt.savefig(path)
     plt.close()
+    logging.info(f"Anomaly plot saved to {path}")
