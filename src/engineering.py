@@ -17,13 +17,13 @@ logger = logging.getLogger(__name__)
 
 class FeatureEngineer:
   def __init__(self, random_state=42):
-      self.random_state = random_state
+    self.random_state = random_state
 
   def _ensure_eager(self, df):
-      """Helper to ensure we are working with a Polars DataFrame (Eager)."""
-      if isinstance(df, pl.LazyFrame):
-          return df.collect()
-      return df
+    """Helper to ensure we are working with a Polars DataFrame (Eager)."""
+    if isinstance(df, pl.LazyFrame):
+      return df.collect()
+    return df
 
   def select_features_rf(self, df, features, target, top_n=5):
     # Sort for determinism before converting to pandas
@@ -94,9 +94,9 @@ class FeatureEngineer:
     logging.info(f"Consensus features with confidence scores: {sorted_consensus}")
     return sorted_consensus
 
-  def calculate_vif(self, df: pl.DataFrame | pl.LazyFrame, features: list, sample_fraction: float = 0.1):
+  def calculate_vif(self, df: pl.DataFrame | pl.LazyFrame, features: dict, sample_fraction: float = 0.1):
     """Calculates VIF with data cleaning for statsmodels compatibility."""
-    logging.info(f"Calculating VIF for features: {features}")
+    logging.info(f"Calculating VIF for features: {[k for k in features.keys()]}")
 
     df_sampled = df.sample(fraction=sample_fraction, seed=self.random_state)
     df_pd = self._ensure_eager(df_sampled).select(features).to_pandas()
