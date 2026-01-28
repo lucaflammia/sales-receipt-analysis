@@ -1,7 +1,7 @@
 environment: local # Options: local, cloud
 
 local:
-  data_path: data/raw/  # Path for local data prototyping
+  data_path: data/  # Path for local data prototyping
   sampling_rate: null
   processed_data_path: data/processed/
   models_path: models/
