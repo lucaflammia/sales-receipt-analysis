@@ -112,7 +112,7 @@ def process_partition(year, month, config, feature_engineer, days=None):
 
     logger.info(f"✅ Aggregated {df.height} baskets. Starting ML...")
 
-    # Anomaly Detection & Plotting
+    # Anomaly Detection Section
     df_ml = df.drop_nulls(subset=["basket_value"])
 
     if df_ml.height < 10:
@@ -127,26 +127,61 @@ def process_partition(year, month, config, feature_engineer, days=None):
         suffix = f"d{min(days)}_{max(days)}" if days else "full"
         model_path = f"models/iforest_{year}_{month}_{suffix}.joblib"
         
-        # Scoring
-        df = feature_engineer.add_anomaly_score(df, features=consensus, model_path=model_path)
+        # Scoring & Severity Mapping
+        df = feature_engineer.add_anomaly_score(df, features=list(consensus.keys()), model_path=model_path)
         df = feature_engineer.map_severity(df)
 
-        # --- Plotting Step ---
+        logger.info("🧠 Performing Shopping Mission Segmentation...")
+        
+        # We use a FIXED set of behavioral features for missions to ensure 
+        # the clusters always have 'size', 'value', and 'freshness' context.
+        behavioral_features = ["basket_size", "basket_value_per_item", "freshness_weight_ratio"]
+        behavioral_features = [f for f in behavioral_features if f in df.columns]
+        
+        # Generate Elbow Plot
+        elbow_path = os.path.join("plots", f"elbow_{year}_{month}_{suffix}.png")
+        feature_engineer.plot_elbow_method(df, features=behavioral_features, path=elbow_path)
+        
+        # Apply K-Means
+        df = feature_engineer.segment_shopping_missions(
+          df, 
+          features=behavioral_features, 
+          n_clusters=4
+        )
+
+        # Plotting Step
         plot_filename = f"anomalies_{year}_{month}_{suffix}.png"
         plot_path = os.path.join("plots", plot_filename)
-        feature_engineer.plot_anomalies(df, features=rf_imp, path=plot_path)
+        feature_engineer.plot_anomalies(df, features=consensus, path=plot_path)
 
     # Export
     export_root = os.path.join(env_config["processed_data_path"], f"area={area_code}", f"year={year}", f"month={month}")
     if days:
       export_root = os.path.join(export_root, f"days_{min(days)}_to_{max(days)}")
-        
+
     os.makedirs(export_root, exist_ok=True)
     df.write_parquet(os.path.join(export_root, "canonical_baseline.parquet"))
-    logger.info(f"✅ Saved to: {export_root}")
+    logger.info(f"✅ Saved results to: {export_root}")
+
+    # --- 📊 Final Analytical Summary Table ---
+    if "shopping_mission" in df.columns:
+      summary = (
+        df.group_by("shopping_mission")
+        .agg([
+          pl.count().alias("receipt_count"),
+          pl.col("basket_value").mean().round(2).alias("avg_value"),
+          pl.col("basket_size").mean().round(1).alias("avg_size")
+        ])
+        .sort("receipt_count", descending=True)
+      )
+      
+      logger.info("\n" + "="*50 + "\nSHOPPING MISSION DISTRIBUTION\n" + "="*50)
+      # Using Polars default formatting for a clean table in logs
+      print(summary)
+      logger.info("="*50)
 
   except Exception as e:
-    logger.error(f"❌ Processing Error for {year}-{month}: {e}")
+    logger.error(f"❌ Processing Error for {year}-{month}: {e}", exc_info=True)
 
 def main():
   parser = argparse.ArgumentParser()

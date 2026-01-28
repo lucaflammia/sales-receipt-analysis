@@ -9,6 +9,7 @@ import numpy as np
 from sklearn.ensemble import IsolationForest, RandomForestRegressor
 from sklearn.linear_model import LassoCV
 from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.tools import add_constant
 
@@ -314,3 +315,72 @@ class FeatureEngineer:
     plt.savefig(path, dpi=150)
     plt.close()
     logging.info(f"📊 Top 2D pairwise plots saved: {path}")
+
+  def segment_shopping_missions(self, df, features, n_clusters=4):
+    """Applies K-Means and maps results to missions."""
+    if df.height < n_clusters:
+      logger.warning("Not enough data points to form requested clusters.")
+      return df
+
+    # Standardize for equal weighting
+    scaler = StandardScaler()
+    X = df.select(features).to_numpy()
+    X_scaled = scaler.fit_transform(X)
+
+    # Clustering
+    kmeans = KMeans(n_clusters=n_clusters, random_state=self.random_state, n_init=10)
+    clusters = kmeans.fit_predict(X_scaled)
+
+    # Add IDs and Map Labels
+    centroids = scaler.inverse_transform(kmeans.cluster_centers_)
+    mapping = self._map_centroid_to_mission(centroids, features)
+    
+    return df.with_columns([
+      pl.Series(name="cluster_id", values=clusters),
+      pl.Series(name="shopping_mission", values=[mapping[c] for c in clusters])
+    ])
+
+  def _map_centroid_to_mission(self, centroids, features):
+    """Translates numeric centroids into business missions with safety guards."""
+    mission_labels = {}
+    feat_map = {f: i for i, f in enumerate(features)}
+
+    # Extract indices with fallback to None if feature wasn't used in clustering
+    idx_size = feat_map.get("basket_size")
+    idx_fresh = feat_map.get("freshness_weight_ratio")
+    idx_value = feat_map.get("basket_value_per_item")
+
+    for i, center in enumerate(centroids):
+      # Get values or neutral defaults if feature is missing
+      size = center[idx_size] if idx_size is not None else 5
+      fresh = center[idx_fresh] if idx_fresh is not None else 0.2
+      value = center[idx_value] if idx_value is not None else 10
+
+      # Logic based on Italian retail benchmarks
+      if size > 12:
+        mission_labels[i] = "Weekly Stock-up"
+      elif fresh > 0.45:
+        mission_labels[i] = "Daily Fresh Trip"
+      elif size <= 3 and value > 15:
+        mission_labels[i] = "Convenience Stop"
+      else:
+        mission_labels[i] = "Standard Fill"
+            
+    return mission_labels
+
+  def plot_elbow_method(self, df, features, max_k=10, path="plots/elbow.png"):
+    """Determines the optimal K."""
+    X = StandardScaler().fit_transform(df.select(features).to_numpy())
+    distortions = []
+    K = range(1, max_k + 1)
+    for k in K:
+      kmeanModel = KMeans(n_clusters=k, n_init=10).fit(X)
+      distortions.append(kmeanModel.inertia_)
+
+    plt.figure(figsize=(10,6))
+    plt.plot(K, distortions, 'bx-')
+    plt.xlabel('k')
+    plt.ylabel('Distortion')
+    plt.title('Elbow Method showing the optimal k')
+    plt.savefig(path)
+    plt.close()
