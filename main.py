@@ -3,184 +3,172 @@ import logging
 import psutil
 import time
 import os
-import numpy as np
-from src.ingestion import load_config, load_data
+import argparse
+import glob
+from src.ingestion import load_config
 from src.engineering import FeatureEngineer
 
 logging.basicConfig(
-  level=logging.INFO,
-  format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 def log_resource_usage(stage: str):
   process = psutil.Process(os.getpid())
   mem = process.memory_info().rss / (1024 * 1024)
-  cpu = process.cpu_percent(interval=None)
-  logger.info(f"[{stage}] CPU: {cpu:.2f}% | RAM: {mem:.2f} MB")
+  logger.info(f"[{stage}] RAM: {mem:.2f} MB")
 
-def main():
-  start_time = time.time()
-  logger.info("Starting Sales Receipt Analysis pipeline...")
-  log_resource_usage("Start")
+def find_partition_path(area_root, year, month):
+  pattern = os.path.join(area_root, "**", f"year={year}", f"month={month}")
+  matches = glob.glob(pattern, recursive=True)
+  dirs = [m for m in matches if os.path.isdir(m)]
+  return dirs[0] if dirs else None
 
-  config = load_config()
-
+def process_partition(year, month, config, feature_engineer, days=None):
   env_config = config[config["environment"]]
-  file_name = "venduto_dettagli_20240601_20240831_AREA_382-100KROW.csv"
-
-  # --- DYNAMIC SAMPLING LOGIC ---
-  sampling_rate = env_config.get("sampling_rate")
-
-  if config["environment"] == "local":
-    file_path = os.path.join(env_config["data_path"], file_name)
-    if os.path.exists(file_path):
-      file_size_gb = os.path.getsize(file_path) / (1024**3)
-      if file_size_gb < 1.0:
-        logger.info(f"File size ({file_size_gb:.2f} GB) is < 1GB. Setting sampling_rate to 1.0")
-        sampling_rate = 1.0
-      else:
-        sampling_rate = 0.1
-
-  # If sampling_rate is still None (fallback)
-  sampling_rate = sampling_rate if sampling_rate is not None else 1.0
+  area_code = env_config.get('area_code', '382')
   
-  # Load Data with Italian Schema mapping
+  area_path = os.path.join(
+    env_config["data_path"], 
+    "raw_normalized", "venduto", f"area={area_code}"
+  )
+
+  base_data_path = find_partition_path(area_path, year, month)
+  
+  if not base_data_path:
+    logger.warning(f"⚠️ Path not found for Year={year}, Month={month}")
+    return
+
+  logger.info(f"📂 Found Data: {base_data_path}")
+
+  all_files = []
+  if days:
+    for d in days:
+      day_glob = os.path.join(base_data_path, f"day={d}", "*.parquet")
+      all_files.extend(glob.glob(day_glob))
+  else:
+    full_glob = os.path.join(base_data_path, "day=*", "*.parquet")
+    all_files = glob.glob(full_glob)
+
+  if not all_files:
+    logger.warning(f"⚠️ No parquet files found in {base_data_path}")
+    return
+
+  logger.info(f"📊 Found {len(all_files)} files to scan.")
+
   try:
-    raw_data_lazy = load_data(config, file_pattern=file_name)
-  except Exception as e:
-    logger.info(f"Loading failed: {e}. Using dummy Italian data.")
-    raw_data_lazy = pl.LazyFrame(
-      {
-        "scontrinoIdentificativo": [1, 1, 2, 2, 3],
-        "articoloCodice": ["A1", "A2", "A1", "A3", "A2"],
-        "totaleLordo": [2.0, 0.5, 1.0, 1.2, 1.2],
-        "quantitaPeso": [0.5, None, 0.4, None, None],
-        "quantitaPezzi": [1, 1, 1, 1, 2],
-        "dataVendita": [
-          "2023-01-01",
-          "2023-01-01",
-          "2023-01-02",
-          "2023-01-02",
-          "2023-01-03",
-        ],
-        "oraVendita": [
-          "10:00:00",
-          "10:00:00",
-          "11:00:00",
-          "11:00:00",
-          "12:00:00",
-        ],
-      }
-    )
-
-  # Apply Sampling if needed
-  if sampling_rate < 1.0:
-    raw_data_lazy = raw_data_lazy.sample(fraction=sampling_rate)
-
-  raw_data_lazy = raw_data_lazy.rename(
-    {
+    # Load LazyFrame
+    raw_data_lazy = pl.scan_parquet(all_files)
+    
+    # Schema Normalization
+    raw_data_lazy = raw_data_lazy.with_columns([
+      pl.col("scontrinoIdentificativo").cast(pl.String),
+      pl.col("articoloCodice").cast(pl.String)
+    ]).rename({
       "scontrinoIdentificativo": "receipt_id",
       "totaleLordo": "line_total",
-      "quantitaPeso": "Weight",
-      "dataVendita": "date_str",
-      "oraVendita": "time_str",
-      "articoloCodice": "Product SKU",
-    }
-  )
+      "quantitaPeso": "weight",
+      "negozioCodice": "store_id",
+      "scontrinoData": "date_str",
+      "scontrinoOra": "time_str",
+      "articoloCodice": "product_id"
+    })
+
+    # Item-Level Enrichment
+    raw_data_lazy = raw_data_lazy.with_columns([
+      pl.lit(f"{year}-{month:02d}").alias("partition_key"),
+      pl.col("line_total").median().over("product_id").alias("Standard_Price")
+    ]).with_columns([
+      (pl.col("line_total") < pl.col("Standard_Price")).fill_null(False).alias("is_discounted"),
+      (pl.col("line_total") - pl.col("Standard_Price")).fill_null(0.0).alias("price_delta"),
+      pl.when(pl.col("weight") > 0).then(pl.col("line_total") / pl.col("weight"))
+        .otherwise(pl.col("line_total")).fill_null(0.0).alias("avg_unit_price")
+    ])
+
+    # Feature Extraction & Aggregation
+    df_lazy = feature_engineer.extract_canonical_features(raw_data_lazy)
+    df = df_lazy.collect()
+
+    if df.height == 0:
+      logger.error(f"🛑 Empty DataFrame for {year}-{month} after aggregation.")
+      return
+
+    # ML Preparation
+    features_to_test = [
+      "basket_size", "basket_value_per_item", "hour_of_day", 
+      "is_weekend", "store_numeric", "freshness_weight_ratio", "avg_price_delta_per_basket"
+    ]
+    available_features = [f for f in features_to_test if f in df.columns]
+    
+    # Diagnostic Log
+    null_stats = df.select(available_features).null_count()
+    logger.info(f"🕵️ Feature Null Counts: {null_stats.to_dicts()[0]}")
+
+    # Fill Nulls/NaNs to ensure ML processing
+    df = df.with_columns([
+      pl.col(available_features).fill_null(0.0).fill_nan(0.0)
+    ])
+
+    logger.info(f"✅ Aggregated {df.height} baskets. Starting ML...")
+
+    # Anomaly Detection & Plotting
+    df_ml = df.drop_nulls(subset=["basket_value"])
+
+    if df_ml.height < 10:
+      logger.warning(f"⚠️ Not enough data for ML in {year}-{month} (Rows: {df_ml.height}).")
+    else:
+      # Feature Importance
+      rf_imp = feature_engineer.select_features_rf(df_ml, features=available_features, target="basket_value")
+      lasso_imp = feature_engineer.select_features_lasso(df_ml, features=available_features, target="basket_value")
+      consensus = feature_engineer.get_consensus_features(rf_imp, lasso_imp)
+
+      if consensus:
+        suffix = f"d{min(days)}_{max(days)}" if days else "full"
+        model_path = f"models/iforest_{year}_{month}_{suffix}.joblib"
+        
+        # Scoring
+        df = feature_engineer.add_anomaly_score(df, features=consensus, model_path=model_path)
+        df = feature_engineer.map_severity(df)
+
+        # --- Plotting Step ---
+        plot_filename = f"anomalies_{year}_{month}_{suffix}.png"
+        plot_path = os.path.join("plots", plot_filename)
+        feature_engineer.plot_anomalies(df, features=rf_imp, path=plot_path)
+
+    # Export
+    export_root = os.path.join(env_config["processed_data_path"], f"area={area_code}", f"year={year}", f"month={month}")
+    if days:
+      export_root = os.path.join(export_root, f"days_{min(days)}_to_{max(days)}")
+        
+    os.makedirs(export_root, exist_ok=True)
+    df.write_parquet(os.path.join(export_root, "canonical_baseline.parquet"))
+    logger.info(f"✅ Saved to: {export_root}")
+
+  except Exception as e:
+    logger.error(f"❌ Processing Error for {year}-{month}: {e}")
+
+def main():
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--year", type=int, required=True)
+  parser.add_argument("--month", type=int, required=True)
+  parser.add_argument("--month_end", type=int)
+  parser.add_argument("--day", type=int)
+  parser.add_argument("--day_end", type=int)
+  args = parser.parse_args()
+
+  start_time = time.time()
+  config = load_config()
+  fe = FeatureEngineer()
   
-  # Add Random Price & Standard Price Guardrail
-  # We generate a random price and a 'Standard' reference price for testing
-  raw_data_lazy = raw_data_lazy.with_columns([
-    pl.lit(np.random.uniform(0.5, 50.0)).alias("Price"),
-    pl.lit(np.random.uniform(0.5, 50.0)).alias("Standard_Price")
-  ])
+  months = range(args.month, (args.month_end or args.month) + 1)
+  target_days = list(range(args.day, (args.day_end or args.day) + 1)) if args.day else None
   
-  # Create the row-level Discount Flag
-  raw_data_lazy = raw_data_lazy.with_columns(
-    (pl.col("Price") < pl.col("Standard_Price")).alias("is_discounted")
-  )
-  
-  raw_data_lazy = raw_data_lazy.with_columns(
-    pl.when(pl.col("Weight") > 0)
-    .then(pl.col("Price") / pl.col("Weight"))
-    .otherwise(pl.col("Price"))
-    .alias("avg_unit_price")
-  )
+  for m in months:
+    process_partition(args.year, m, config, fe, days=target_days)
+    log_resource_usage(f"Completed Month {m}")
 
-  log_resource_usage("Data Ingested & Unit Prices Calculated")
-
-  # Feature Engineering
-  feature_engineer = FeatureEngineer()
-  processed_data_lazy = feature_engineer.extract_shopping_mission_features(raw_data_lazy)
-
-  logger.info("Materializing data...")    
-  eager_processed_data = processed_data_lazy.collect()
-  log_resource_usage("Data Materialized")
-
-  # Feature Selection (Consensus)
-  features_to_test = [
-    "basket_size",
-    "basket_value_per_item",
-    "avg_basket_unit_price",
-    "hour",
-    "day_of_week",
-    "freshness_weight_ratio",
-    "freshness_value_ratio",
-    "has_fresh_produce",
-    "discount_ratio",
-  ]
-
-  logger.info("Running Feature Selection (RF & Lasso)...")
-  rf_important = feature_engineer.select_features_rf(
-    eager_processed_data, features=features_to_test, target="basket_value", top_n=3
-  )
-  lasso_important = feature_engineer.select_features_lasso(
-    eager_processed_data, features=features_to_test, target="basket_value"
-  )
-  
-  logger.info(f"Full RF Importances: {rf_important}")
-  logger.info(f"Full Lasso Coefs: {lasso_important}")
-
-  consensus_features = feature_engineer.get_consensus_features(
-    rf_important, lasso_important
-  )
-
-  # Validation & Anomalies
-  if consensus_features:
-    # Check VIF only on chosen features to ensure stability
-    vif_results = feature_engineer.calculate_vif(
-      eager_processed_data, features=consensus_features
-    )
-    logger.info(f"Final VIF Results: {vif_results}")
-
-    # Anomaly Detection
-    os.makedirs("models", exist_ok=True)
-    eager_processed_data = feature_engineer.add_anomaly_score(
-      eager_processed_data,
-      features=consensus_features,
-      model_path="models/iforest.joblib",
-    )
-
-    # Visual Verification
-    if len(consensus_features) >= 2:
-      feature_engineer.plot_anomalies(eager_processed_data, consensus_features)
-  else:
-    logger.warning(
-      "No consensus features found. Using fallback features for anomalies."
-    )
-
-  # Save to Parquet
-  output_dir = env_config["processed_data_path"]
-  os.makedirs(output_dir, exist_ok=True)
-
-  # Define the specific filename
-  output_file = os.path.join(output_dir, "processed_receipts.parquet")
-  eager_processed_data.write_parquet(output_file)
-
-  logger.info(f"Processed data saved to: {output_file}")
-  logger.info(f"Pipeline finished in {time.time() - start_time:.2f} seconds.")
-
+  logger.info(f"⏱️ Total Execution Time: {time.time() - start_time:.2f}s")
 
 if __name__ == "__main__":
   main()

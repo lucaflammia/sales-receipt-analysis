@@ -25,7 +25,82 @@ class FeatureEngineer:
       return df.collect()
     return df
 
-  def select_features_rf(self, df, features, target, top_n=5):
+  def extract_canonical_features(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+    """
+      Implements the requirements:
+      1. Base Features (Baseline parity)
+      2. Extra Features (Weight Handling, Peak Pressure, etc.)
+    """
+    logger.info("Replicating Canonical Base + Adding Extra Features...")
+
+    # Base Features (Baseline)
+    lf = lf.with_columns([
+      pl.col("date_str").cast(pl.String).str.to_date("%Y%m%d", strict=False),
+      pl.col("time_str").cast(pl.String).str.slice(0, 2).cast(pl.Int32).alias("hour_of_day"),
+      pl.col("selfScanning").replace({"Y": 1, "N": 0}).cast(pl.Int8)
+    ]).with_columns([
+      pl.col("date_str").dt.weekday().alias("day_of_week"),
+      pl.col("date_str").dt.weekday().is_in([6, 7]).cast(pl.Int8).alias("is_weekend"),
+      # Categorical hashing for ML
+      pl.col("store_id").cast(pl.String).hash().mod(1000).alias("store_numeric"),
+    ])
+
+    # Weight Handling & Peak Pressure
+    lf = lf.with_columns([
+      pl.col("weight").fill_null(0.0).cast(pl.Float64),
+      pl.when((pl.col("hour_of_day").is_between(12, 14)) | (pl.col("hour_of_day").is_between(18, 20)))
+        .then(pl.lit(1)).otherwise(pl.lit(0)).alias("peak_hour_pressure_numeric")
+    ])
+    
+    # Freshness Logic
+    lf = lf.with_columns((pl.col("weight") > 0).alias("is_fresh"))
+
+    agg_lf = lf.group_by("receipt_id").agg([
+      pl.col("line_total").sum().alias("basket_value"),
+      pl.col("product_id").n_unique().alias("basket_size"),
+      pl.col("is_fresh").any().cast(pl.Int8).alias("has_fresh_produce"),
+      pl.col("is_discounted").sum().alias("discounted_item_count"),
+      pl.col("weight").filter(pl.col("is_fresh")).sum().alias("fresh_weight_sum"),
+      pl.col("weight").sum().alias("total_weight"),
+      pl.col("line_total").filter(pl.col("is_fresh")).sum().alias("fresh_value_sum"),
+      pl.col("avg_unit_price").mean().alias("avg_basket_unit_price"),
+      pl.col("price_delta").mean().alias("avg_price_delta_per_basket"),
+      pl.first("hour_of_day"),
+      pl.first("is_weekend"),
+      pl.first("store_numeric"),
+      pl.first("peak_hour_pressure_numeric")
+    ])
+
+    agg_lf = agg_lf.with_columns([
+      (pl.col("basket_value") / pl.col("basket_size")).alias("basket_value_per_item"),
+      (pl.col("discounted_item_count") / pl.col("basket_size")).fill_nan(0).alias("discount_ratio"),
+      (pl.col("fresh_weight_sum") / pl.col("total_weight")).fill_nan(0).alias("freshness_weight_ratio"),
+      (pl.col("fresh_value_sum") / pl.col("basket_value")).fill_nan(0).alias("freshness_value_ratio")
+    ]).with_columns([
+      # Guardrails for potential Infinity or NaN from divisions
+      pl.col("basket_value_per_item").fill_nan(0).fill_null(0),
+      pl.col("avg_basket_unit_price").fill_nan(0).fill_null(0),
+      pl.col("freshness_weight_ratio").cast(pl.Float64).fill_nan(0),
+      pl.col("freshness_value_ratio").cast(pl.Float64).fill_nan(0),
+      pl.col("avg_price_delta_per_basket").fill_null(0) # Center the delta if missing
+    ])
+    return agg_lf
+
+  def map_severity(self, df: pl.DataFrame):
+    """Maps scores to critical/warning/info to align with reference report labels."""
+    scores = df.select("anomaly_score").to_series()
+    # Lower score = more anomalous
+    q01 = scores.quantile(0.01)
+    q05 = scores.quantile(0.05)
+
+    return df.with_columns(
+      pl.when(pl.col("anomaly_score") <= q01).then(pl.lit("critical"))
+      .when(pl.col("anomaly_score") <= q05).then(pl.lit("warning"))
+      .otherwise(pl.lit("info"))
+      .alias("severity")
+    )
+
+  def select_features_rf(self, df, features, target, top_n=3):
     # Sort for determinism before converting to pandas
     eager_df = self._ensure_eager(df).sort("receipt_id").drop_nulls()
     
@@ -123,64 +198,6 @@ class FeatureEngineer:
       .to_dict()
     )
 
-  def extract_shopping_mission_features(self, lf: pl.LazyFrame) -> pl.LazyFrame:
-    logging.info("Extracting shopping mission features...")
-
-    # Ensure Weight is handled (Standardized Name)
-    lf = lf.with_columns(
-      pl.col("Weight").fill_null(0.0).cast(pl.Float64)
-    )
-
-    # Temporal Features (Standardized Names)
-    lf = lf.with_columns([
-      pl.col("time_str").str.to_time(format="%H:%M:%S", strict=False).alias("time_obj"),
-      pl.col("date_str").str.to_date(format="%Y-%m-%d", strict=False).alias("date_obj")
-    ]).with_columns([
-      pl.col("time_obj").dt.hour().fill_null(0).alias("hour"),
-      pl.col("date_obj").dt.weekday().fill_null(1).alias("day_of_week"),
-      pl.col("date_obj").dt.month().fill_null(1).alias("month"),
-      pl.col("date_obj").dt.year().fill_null(2024).alias("year"),
-    ])
-
-    # Peak Pressure
-    lf = lf.with_columns(
-      pl.when((pl.col("hour").is_between(8, 10)) | (pl.col("hour").is_between(12, 14)) | (pl.col("hour").is_between(17, 19)))
-      .then(pl.lit("peak")).otherwise(pl.lit("off-peak")).alias("peak_hour_pressure")
-    )
-
-    # Freshness Logic
-    lf = lf.with_columns((pl.col("Weight") > 0).alias("is_fresh"))
-
-    agg_lf = lf.group_by("receipt_id").agg([
-      pl.col("line_total").sum().alias("basket_value"),
-      pl.col("Product SKU").n_unique().alias("basket_size"),
-      pl.col("is_fresh").any().cast(pl.Int8).alias("has_fresh_produce"),
-      pl.col("is_discounted").sum().alias("discounted_item_count"),
-      pl.col("Weight").filter(pl.col("is_fresh")).sum().alias("fresh_weight_sum"),
-      pl.col("Weight").sum().alias("total_weight"),
-      pl.col("line_total").filter(pl.col("is_fresh")).sum().alias("fresh_value_sum"),
-      pl.col("avg_unit_price").mean().alias("avg_basket_unit_price"),
-      pl.first("hour"),
-      pl.first("day_of_week"),
-      pl.first("month"),
-      pl.first("year")
-    ])
-
-    agg_lf = agg_lf.with_columns([
-      (pl.col("basket_value") / pl.col("basket_size")).alias("basket_value_per_item"),
-      (pl.col("discounted_item_count") / pl.col("basket_size")).fill_nan(0).alias("discount_ratio"),
-      (pl.col("fresh_weight_sum") / pl.col("total_weight")).fill_nan(0).alias("freshness_weight_ratio"),
-      (pl.col("fresh_value_sum") / pl.col("basket_value")).fill_nan(0).alias("freshness_value_ratio")
-    ]).with_columns([
-      # Guardrails for potential Infinity or NaN from divisions
-      pl.col("basket_value_per_item").fill_nan(0).fill_null(0),
-      pl.col("avg_basket_unit_price").fill_nan(0).fill_null(0),
-      pl.col("freshness_weight_ratio").cast(pl.Float64).fill_nan(0),
-      pl.col("freshness_value_ratio").cast(pl.Float64).fill_nan(0)
-    ])
-
-    return agg_lf
-
   def add_anomaly_score(self, df: pl.DataFrame | pl.LazyFrame, features: list, model_path: str = None):
     """Adds anomaly scores using Isolation Forest."""
     eager_df = self._ensure_eager(df)
@@ -194,38 +211,47 @@ class FeatureEngineer:
 
   def plot_anomalies(self, df, features=None, path="plots/anomalies.png"):
     """
-    Dynamically generates anomaly plots.
-    Handles 'features' as either a list of names or a dict of {name: score}.
+    Dynamically generates anomaly plots for the most relevant features.
+    Prioritizes top features if importance scores are provided.
     """
     os.makedirs("plots", exist_ok=True)
 
+    # Prepare Data
     eager_df = self._ensure_eager(df)
-    pdf = eager_df.sample(
-      n=min(len(eager_df), 2000), seed=self.random_state
-    ).to_pandas()
-
-    if isinstance(features, dict):
-      plot_cols = list(features.keys())
-      feat_scores = list(features.values())
-    elif isinstance(features, list):
-      plot_cols = features
-      feat_scores = None
-    else:
-      plot_cols = [c for c in pdf.columns if c != "anomaly_score"]
-      feat_scores = None
-
-    num_features = len(plot_cols)
-
-    if num_features < 2:
-      logging.warning("Not enough features for dynamic plotting.")
+    if "anomaly_score" not in eager_df.columns:
+      logging.warning("No 'anomaly_score' column found. Skipping plot.")
       return
 
-    # 3D Plotting (If exactly 3 features)
-    if num_features == 3:
+    # Sample for performance, but ensure we have enough data
+    sample_size = min(len(eager_df), 5000)
+    pdf = eager_df.sample(n=sample_size, seed=self.random_state).to_pandas()
+
+    # Logic to determine "Most Relevant" features
+    feat_scores = None
+    if isinstance(features, dict):
+      # Sort features by importance score descending and take top 4
+      sorted_feats = sorted(features.items(), key=lambda x: x[1], reverse=True)
+      plot_cols = [f[0] for f in sorted_feats[:4]]
+      feat_scores = {f[0]: f[1] for f in sorted_feats[:4]}
+    elif isinstance(features, list):
+      plot_cols = features[:4] # Cap at top 4 for readability
+    else:
+      # Fallback: find numerical columns that aren't the score or ID
+      plot_cols = [c for c in pdf.select_dtypes(include=['number']).columns 
+                    if c not in ["anomaly_score", "receipt_id", "store_numeric"]][:4]
+
+    num_features = len(plot_cols)
+    if num_features < 2:
+      logging.warning("Not enough features selected for plotting.")
+      return
+
+    # 3D Plotting (The "Money Shot")
+    if num_features >= 3:
       path_3d = path.replace(".png", "_3d.png")
-      fig = plt.figure(figsize=(10, 7))
+      fig = plt.figure(figsize=(10, 8))
       ax = fig.add_subplot(111, projection="3d")
 
+      # Use the top 3 features
       scatter = ax.scatter(
         pdf[plot_cols[0]],
         pdf[plot_cols[1]],
@@ -233,29 +259,34 @@ class FeatureEngineer:
         c=pdf["anomaly_score"],
         cmap="rocket",
         alpha=0.6,
+        edgecolors="w",
+        linewidth=0.5
       )
 
-      # Apply labels with confidence scores if available
-      if feat_scores:
-        ax.set_xlabel(f"{plot_cols[0].title()} ({feat_scores[0]}%)")
-        ax.set_ylabel(f"{plot_cols[1].title()} ({feat_scores[1]}%)")
-        ax.set_zlabel(f"{plot_cols[2].title()} ({feat_scores[2]}%)")
-      else:
-        ax.set_xlabel(plot_cols[0].title())
-        ax.set_ylabel(plot_cols[1].title())
-        ax.set_zlabel(plot_cols[2].title())
+      # Labels with Importance %
+      labels = []
+      for c in plot_cols[:3]:
+        label = c.replace("_", " ").title()
+        if feat_scores:
+          label += f" ({feat_scores[c]:.1f}%)"
+        labels.append(label)
 
-      plt.title("3D Anomaly Map (Consensus Features)")
-      fig.colorbar(scatter, ax=ax, label="Anomaly Score")
-      plt.savefig(path_3d)
+      ax.set_xlabel(labels[0])
+      ax.set_ylabel(labels[1])
+      ax.set_zlabel(labels[2])
+      
+      plt.title("3D Anomaly Distribution (Top Consensus Features)")
+      fig.colorbar(scatter, ax=ax, label="Anomaly Score", pad=0.1)
+      plt.savefig(path_3d, dpi=150, bbox_inches='tight')
       plt.close()
-      logging.info(f"3D anomaly plot saved to {path_3d}")
+      logging.info(f"✨ Top 3 features 3D plot saved: {path_3d}")
 
-    # Dynamic 2D Pair-wise Plotting
-    combinations = list(itertools.combinations(plot_cols, 2))
+    # Optimized 2.D Pair-wise Plotting
+    # We only plot the most significant combinations (Max 3)
+    combinations = list(itertools.combinations(plot_cols, 2))[:3]
     num_plots = len(combinations)
 
-    fig, axes = plt.subplots(1, num_plots, figsize=(5 * num_plots, 5))
+    fig, axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 5))
     if num_plots == 1:
       axes = [axes]
 
@@ -266,13 +297,20 @@ class FeatureEngineer:
         y=feat_y,
         hue="anomaly_score",
         palette="rocket",
-        ax=axes[i],
+        size="anomaly_score",
+        sizes=(10, 100),
+        alpha=0.7,
+        ax=axes[i]
       )
-      axes[i].set_title(f"{feat_y} vs {feat_x}")
+      
+      # Enhanced titling
+      title = f"{feat_y.replace('_', ' ').title()}\nvs {feat_x.replace('_', ' ').title()}"
+      axes[i].set_title(title, fontweight='bold')
       axes[i].set_xlabel(feat_x.replace("_", " ").title())
       axes[i].set_ylabel(feat_y.replace("_", " ").title())
+      axes[i].grid(True, linestyle='--', alpha=0.5)
 
     plt.tight_layout()
-    plt.savefig(path)
+    plt.savefig(path, dpi=150)
     plt.close()
-    logging.info(f"Dynamic multi-panel anomaly plot saved to {path}")
+    logging.info(f"📊 Top 2D pairwise plots saved: {path}")
