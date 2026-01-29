@@ -27,15 +27,24 @@ def find_partition_path(area_root, year, month):
   return dirs[0] if dirs else None
 
 def generate_global_summary(monthly_data_list, export_path):
-  """Crea un report Excel con fogli mensili in italiano e Executive Summary tradotto."""
+  """
+  Strategic Report with:
+  - Integrated descriptions and discriminant parameters for each mission.
+  - Updated heuristics based on K-Means centroids.
+  - Italian nomenclature for reports and English for logging.
+  """
   if not monthly_data_list:
-    logger.warning("Nessun dato raccolto per generare il Global Summary.")
+    logger.warning("No data collected for Global Summary.")
     return
 
-  it_months = {
-    "01": "Gennaio", "02": "Febbraio", "03": "Marzo", "04": "Aprile",
-    "05": "Maggio", "06": "Giugno", "07": "Luglio", "08": "Agosto",
-    "09": "Settembre", "10": "Ottobre", "11": "Novembre", "12": "Dicembre"
+  # --- 1. CONFIGURATION ---
+  mission_map = {
+    "Standard Mixed Trip": "Spesa Standard Mista",
+    "Premium/Specialty Single-Item": "Premium / Specialità Singolo Articolo",
+    "B2B / Bulk Outlier": "B2B / Ingrosso Outlier",
+    "Weekly Stock-up": "Spesa Settimanale di Scorta",
+    "Quick Convenience": "Convenienza Rapida",
+    "Daily Fresh Pick": "Fresco Quotidiano"
   }
 
   column_translation = {
@@ -44,55 +53,165 @@ def generate_global_summary(monthly_data_list, export_path):
     "total_mission_revenue": "Fatturato_Totale",
     "avg_trip_value": "Valore_Medio_Carrello",
     "avg_items_per_trip": "Pezzi_Medi_per_Spesa",
-    "global_revenue_share_pct": "Quota_Fatturato_Perc",
-    "global_traffic_share_pct": "Quota_Traffico_Perc"
+    "global_trend_pct": "Trend_Fatturato_Periodo_Perc",
+    "global_rev_share": "Quota_Fatturato_Perc",
+    "global_traff_share": "Quota_Traffico_Perc"
+  }
+
+  it_months = {
+    "01": "Gennaio", "02": "Febbraio", "03": "Marzo", "04": "Aprile",
+    "05": "Maggio", "06": "Giugno", "07": "Luglio", "08": "Agosto",
+    "09": "Settembre", "10": "Ottobre", "11": "Novembre", "12": "Dicembre"
   }
 
   with pd.ExcelWriter(export_path, engine='xlsxwriter') as writer:
-    all_months_df = []
+    workbook = writer.book
+    title_fmt = workbook.add_format({'bold': True, 'font_size': 14, 'font_color': '#1A237E'})
+    bold_fmt = workbook.add_format({'bold': True, 'bg_color': '#F2F2F2', 'top': 1})
+    audit_header_fmt = workbook.add_format({'italic': True, 'font_color': '#7F7F7F'})
+
+    # --- TAB: GLOSSARIO E LEGENDA ---
+    glossary_df = pd.DataFrame({
+      "Campo": list(column_translation.values()),
+      "Descrizione": [
+        "Categoria di acquisto identificata dall'algoritmo.",
+        "Conteggio totale degli scontrini per l'intero periodo.",
+        "Valore monetario lordo totale generato nel periodo.",
+        "Spesa media per scontrino calcolata sull'intero periodo.",
+        "Quantità media di articoli per spesa nell'intero periodo.",
+        "Crescita percentuale del fatturato dal primo all'ultimo mese disponibile.",
+        "Peso economico della missione sul fatturato totale globale.",
+        "Incidenza della missione sul volume totale di traffico globale."
+      ],
+      "Unità_di_Misura": ["Testo", "Numero", "Euro €", "Euro €", "Pezzi", "Perc %", "Perc %", "Perc %"]
+    })
     
+    # Mapping descriptions alongside the centroid-based heuristics
+    mission_desc_df = pd.DataFrame({
+      "Missione_di_Spesa": [
+        mission_map["B2B / Bulk Outlier"],
+        mission_map["Weekly Stock-up"],
+        mission_map["Daily Fresh Pick"],
+        mission_map["Premium/Specialty Single-Item"],
+        mission_map["Quick Convenience"],
+        mission_map["Standard Mixed Trip"]
+      ],
+      "Descrizione_Dettagliata": [
+        "Acquisto professionale: grandi volumi o fatturati estremi.",
+        "Acquisto pianificato: carrello grande per rifornimento casa.",
+        "Acquisto focalizzato su prodotti freschi e deperibili.",
+        "Acquisto di alta gamma: pochi articoli ma ad alto valore unitario.",
+        "Acquisto d'impulso o necessità immediata: basso valore.",
+        "Acquisto bilanciato: mix merceologico standard."
+      ],
+      "Parametri_Discriminanti": [
+        "Valore > 300€ o (Pezzi > 15 e Valore > 100€).",
+        "Pezzi (Basket Size) > 6.",
+        "Incidenza Peso Freschissimi (Freshness Ratio) > 40%.",
+        "Valore per Articolo > 40€.",
+        "Valore per Articolo < 12€.",
+        "Valore per Articolo compreso tra 12€ e 40€."
+      ]
+    })
+
+    glossary_df.to_excel(writer, sheet_name="Glossario_e_Legenda", index=False)
+    mission_desc_df.to_excel(writer, sheet_name="Glossario_e_Legenda", index=False, startrow=len(glossary_df)+2)
+
+    # --- DATA PROCESSING ---
+    all_months_df = []
+    all_anomalies = []
     for entry in monthly_data_list:
       period_str = entry['period']
-      month_num = period_str.split('-')[-1]
-      sheet_name = it_months.get(month_num, f"Mese_{month_num}")
-      
+      it_name = it_months.get(period_str.split('-')[-1], "Mese")
       df_pd = entry['data'].to_pandas()
-      df_pd.to_excel(writer, sheet_name=sheet_name, index=False)
       
-      df_pd['period'] = period_str
-      all_months_df.append(df_pd)
+      anoms = df_pd[df_pd["shopping_mission"] == "B2B / Bulk Outlier"].copy()
+      anoms["Mese_Riferimento"] = it_name
+      all_anomalies.append(anoms)
 
-    # Executive Summary Logic
+      m_exp = df_pd.copy()
+      m_exp["shopping_mission"] = m_exp["shopping_mission"].replace(mission_map)
+      m_exp.rename(columns={
+        "shopping_mission": "Missione_di_Spesa",
+        "receipt_count": "Numero_Scontrini",
+        "total_mission_revenue": "Fatturato_Totale",
+        "avg_trip_value": "Valore_Medio_Carrello",
+        "avg_items_per_trip": "Pezzi_Medi_per_Spesa",
+        "revenue_share_pct": "Quota_Fatturato_Perc",
+        "traffic_share_pct": "Quota_Traffico_Perc"
+      }).to_excel(writer, sheet_name=it_name, index=False)
+      
+      raw = df_pd.copy()
+      raw['period'] = period_str
+      all_months_df.append(raw)
+
+    # --- TAB: AUDIT ANOMALIE ---
+    if all_anomalies:
+      an_df = pd.concat(all_anomalies)
+      an_df["shopping_mission"] = an_df["shopping_mission"].replace(mission_map)
+      an_df = an_df.rename(columns=column_translation)
+      an_df = an_df[["Mese_Riferimento", "Missione_di_Spesa", "Numero_Scontrini", "Fatturato_Totale"]]
+      an_df.to_excel(writer, sheet_name="Audit_Anomalie", index=False, startrow=2)
+      audit_sheet = writer.sheets["Audit_Anomalie"]
+      audit_desc = "LOGICA DI RILEVAMENTO: Valore > 300€ o (Pezzi > 15 e Valore > 100€) [Heuristica B2B]."
+      audit_sheet.write('A1', audit_desc, audit_header_fmt)
+
+    # --- TAB: EXECUTIVE SUMMARY ---
     summary_df = pd.concat(all_months_df)
-    clean_summary = summary_df[summary_df["shopping_mission"] != "B2B / Bulk Outlier"]
+    periods = sorted(summary_df["period"].unique())
+    time_range_title = f"PERIODO DI ANALISI: {periods[0]} - {periods[-1]}"
     
-    exec_summary = clean_summary.groupby("shopping_mission").agg({
-      "receipt_count": "sum",
-      "total_mission_revenue": "sum",
-      "avg_trip_value": "mean",
-      "avg_items_per_trip": "mean"
-    }).sort_values("total_mission_revenue", ascending=False)
-    
-    b2b_only = summary_df[summary_df["shopping_mission"] == "B2B / Bulk Outlier"]
-    if not b2b_only.empty:
-      b2b_sum = b2b_only.groupby("shopping_mission").agg({
-        "receipt_count": "sum",
-        "total_mission_revenue": "sum",
-        "avg_trip_value": "mean",
-        "avg_items_per_trip": "mean"
-      })
-      exec_summary = pd.concat([exec_summary, b2b_sum])
+    trend_pivot = summary_df.pivot_table(index="shopping_mission", columns="period", values="total_mission_revenue", aggfunc="sum").sort_index(axis=1)
+    global_trend = trend_pivot.apply(lambda r: ((r.dropna().iloc[-1] - r.dropna().iloc[0]) / r.dropna().iloc[0] * 100) if len(r.dropna()) > 1 else 0.0, axis=1).round(2)
 
+    exec_summary = summary_df.groupby("shopping_mission").agg({
+      "receipt_count": "sum", "total_mission_revenue": "sum", "avg_trip_value": "mean", "avg_items_per_trip": "mean"
+    })
+    
     total_rev = exec_summary["total_mission_revenue"].sum()
     total_traff = exec_summary["receipt_count"].sum()
-    exec_summary["global_revenue_share_pct"] = (exec_summary["total_mission_revenue"] / total_rev * 100).round(2)
-    exec_summary["global_traffic_share_pct"] = (exec_summary["receipt_count"] / total_traff * 100).round(2)
     
-    # Final Translation and export
-    exec_summary = exec_summary.reset_index().rename(columns=column_translation)
-    exec_summary.to_excel(writer, sheet_name="Executive_Summary", index=False)
-          
-  logger.info(f"📈 Global Strategic Report saved to: {export_path}")
+    exec_summary["global_trend_pct"] = global_trend
+    exec_summary["global_rev_share"] = (exec_summary["total_mission_revenue"] / total_rev * 100).round(2)
+    exec_summary["global_traff_share"] = (exec_summary["receipt_count"] / total_traff * 100).round(2)
+
+    exec_final = exec_summary.reset_index()
+    exec_final["shopping_mission"] = exec_final["shopping_mission"].replace(mission_map)
+    exec_final = exec_final.rename(columns=column_translation)
+    
+    final_cols_ordered = [v for v in column_translation.values() if v in exec_final.columns]
+    sorted_summary = exec_final[final_cols_ordered].sort_values("Fatturato_Totale", ascending=False)
+    
+    sheet_name = "Executive_Summary"
+    sorted_summary.to_excel(writer, sheet_name=sheet_name, index=False, startrow=2)
+    summary_sheet = writer.sheets[sheet_name]
+    summary_sheet.write('A1', time_range_title, title_fmt)
+
+    # Write the Bold TOTALE row with a spacer
+    total_row_idx = len(sorted_summary) + 4 
+    totals_data = [
+      "TOTALE", total_traff, total_rev, 
+      exec_summary["avg_trip_value"].mean(), exec_summary["avg_items_per_trip"].mean(),
+      global_trend.mean(), 100.0, 100.0
+    ]
+    
+    for col_num, value in enumerate(totals_data):
+        summary_sheet.write(total_row_idx, col_num, value, bold_fmt)
+
+    # --- INSERT CHART ---
+    chart = workbook.add_chart({'type': 'column'})
+    trend_col_idx = final_cols_ordered.index(column_translation["global_trend_pct"])
+    
+    chart.add_series({
+      'name': 'Trend Crescita %',
+      'categories': [sheet_name, 3, 0, len(sorted_summary)+2, 0],
+      'values':     [sheet_name, 3, trend_col_idx, len(sorted_summary)+2, trend_col_idx],
+      'fill':       {'color': '#1A237E'}
+    })
+    chart.set_title({'name': 'Analisi Strategica: Crescita Fatturato'})
+    summary_sheet.insert_chart('K3', chart)
+
+  logger.info(f"📈 Strategic Report saved: {export_path}")
 
 def process_partition(year, month, config, feature_engineer, days=None):
   env_config = config[config["environment"]]
@@ -296,7 +415,7 @@ def main():
   if global_insights:
     os.makedirs("reports", mode=0o777, exist_ok=True)
     
-    summary_path = f"reports/Global_Summary_{args.year}.xlsx"
+    summary_path = f"reports/IBC_Global_Summary_{args.year}.xlsx"
     
     try:
       generate_global_summary(global_insights, export_path=summary_path)
