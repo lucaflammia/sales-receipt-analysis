@@ -79,14 +79,13 @@ def generate_global_summary(monthly_data_list, export_path):
         "Valore monetario lordo totale generato nel periodo.",
         "Spesa media per scontrino calcolata sull'intero periodo.",
         "Quantità media di articoli per spesa nell'intero periodo.",
-        "Crescita percentuale del fatturato dal primo all'ultimo mese disponibile.",
+        "Crescita percentuale del fatturato dal primo all'ultimo mese.",
         "Peso economico della missione sul fatturato totale globale.",
-        "Incidenza della missione sul volume totale di traffico globale."
+        "Incidenza della missione sul volume totale di traffico."
       ],
       "Unità_di_Misura": ["Testo", "Numero", "Euro €", "Euro €", "Pezzi", "Perc %", "Perc %", "Perc %"]
     })
     
-    # Mapping descriptions alongside the centroid-based heuristics
     mission_desc_df = pd.DataFrame({
       "Missione_di_Spesa": [
         mission_map["B2B / Bulk Outlier"],
@@ -97,20 +96,20 @@ def generate_global_summary(monthly_data_list, export_path):
         mission_map["Standard Mixed Trip"]
       ],
       "Descrizione_Dettagliata": [
-        "Acquisto professionale: grandi volumi o fatturati estremi.",
-        "Acquisto pianificato: carrello grande per rifornimento casa.",
+        "Grandi volumi o fatturati estremi (Profilo Business).",
+        "Spesa di rifornimento programmata (Grande carrello).",
         "Acquisto focalizzato su prodotti freschi e deperibili.",
-        "Acquisto di alta gamma: pochi articoli ma ad alto valore unitario.",
-        "Acquisto d'impulso o necessità immediata: basso valore.",
-        "Acquisto bilanciato: mix merceologico standard."
+        "Articoli di alta gamma o specialistici ad alto valore.",
+        "Acquisto di necessità immediata o impulso.",
+        "Mix merceologico bilanciato di routine."
       ],
       "Parametri_Discriminanti": [
-        "Valore > 300€ o (Pezzi > 15 e Valore > 100€).",
-        "Pezzi (Basket Size) > 6.",
-        "Incidenza Peso Freschissimi (Freshness Ratio) > 40%.",
-        "Valore per Articolo > 40€.",
-        "Valore per Articolo < 12€.",
-        "Valore per Articolo compreso tra 12€ e 40€."
+        "Pezzi > 30 o (Pezzi > 10 e Valore/Articolo > 150€).",
+        "Pezzi (Basket Size) > 5.",
+        "Incidenza Freschissimi > 30% e Pezzi > 1.2.",
+        "Pezzi <= 2.5 e Valore/Articolo > 45€.",
+        "Pezzi <= 2.5 e Valore/Articolo < 12€.",
+        "Pezzi <= 2.5 e Valore/Articolo tra 12€ e 45€."
       ]
     })
 
@@ -125,10 +124,13 @@ def generate_global_summary(monthly_data_list, export_path):
       it_name = it_months.get(period_str.split('-')[-1], "Mese")
       df_pd = entry['data'].to_pandas()
       
+      # Extract anomalies for the Audit sheet
       anoms = df_pd[df_pd["shopping_mission"] == "B2B / Bulk Outlier"].copy()
-      anoms["Mese_Riferimento"] = it_name
-      all_anomalies.append(anoms)
+      if not anoms.empty:
+        anoms["Mese_Riferimento"] = it_name
+        all_anomalies.append(anoms)
 
+      # Map for monthly sheet
       m_exp = df_pd.copy()
       m_exp["shopping_mission"] = m_exp["shopping_mission"].replace(mission_map)
       m_exp.rename(columns={
@@ -150,16 +152,15 @@ def generate_global_summary(monthly_data_list, export_path):
       an_df = pd.concat(all_anomalies)
       an_df["shopping_mission"] = an_df["shopping_mission"].replace(mission_map)
       an_df = an_df.rename(columns=column_translation)
-      an_df = an_df[["Mese_Riferimento", "Missione_di_Spesa", "Numero_Scontrini", "Fatturato_Totale"]]
-      an_df.to_excel(writer, sheet_name="Audit_Anomalie", index=False, startrow=2)
+      cols_to_keep = ["Mese_Riferimento", "Missione_di_Spesa", "Numero_Scontrini", "Fatturato_Totale", "Valore_Medio_Carrello"]
+      an_df[cols_to_keep].to_excel(writer, sheet_name="Audit_Anomalie", index=False, startrow=2)
       audit_sheet = writer.sheets["Audit_Anomalie"]
-      audit_desc = "LOGICA DI RILEVAMENTO: Valore > 300€ o (Pezzi > 15 e Valore > 100€) [Heuristica B2B]."
+      audit_desc = "LOGICA B2B: Pezzi > 30 o (Pezzi > 10 e Valore/Articolo > 150€)."
       audit_sheet.write('A1', audit_desc, audit_header_fmt)
 
     # --- TAB: EXECUTIVE SUMMARY ---
     summary_df = pd.concat(all_months_df)
     periods = sorted(summary_df["period"].unique())
-    time_range_title = f"PERIODO DI ANALISI: {periods[0]} - {periods[-1]}"
     
     trend_pivot = summary_df.pivot_table(index="shopping_mission", columns="period", values="total_mission_revenue", aggfunc="sum").sort_index(axis=1)
     global_trend = trend_pivot.apply(lambda r: ((r.dropna().iloc[-1] - r.dropna().iloc[0]) / r.dropna().iloc[0] * 100) if len(r.dropna()) > 1 else 0.0, axis=1).round(2)
@@ -185,30 +186,23 @@ def generate_global_summary(monthly_data_list, export_path):
     sheet_name = "Executive_Summary"
     sorted_summary.to_excel(writer, sheet_name=sheet_name, index=False, startrow=2)
     summary_sheet = writer.sheets[sheet_name]
-    summary_sheet.write('A1', time_range_title, title_fmt)
+    summary_sheet.write('A1', f"ANALISI GLOBALE: {periods[0]} - {periods[-1]}", title_fmt)
 
-    # Write the Bold TOTALE row with a spacer
+    # Footer Totals
     total_row_idx = len(sorted_summary) + 4 
-    totals_data = [
-      "TOTALE", total_traff, total_rev, 
-      exec_summary["avg_trip_value"].mean(), exec_summary["avg_items_per_trip"].mean(),
-      global_trend.mean(), 100.0, 100.0
-    ]
-    
+    totals_data = ["TOTALE", total_traff, total_rev, "", "", "", 100.0, 100.0]
     for col_num, value in enumerate(totals_data):
-        summary_sheet.write(total_row_idx, col_num, value, bold_fmt)
+      summary_sheet.write(total_row_idx, col_num, value, bold_fmt)
 
-    # --- INSERT CHART ---
+    # Growth Chart
     chart = workbook.add_chart({'type': 'column'})
     trend_col_idx = final_cols_ordered.index(column_translation["global_trend_pct"])
-    
     chart.add_series({
       'name': 'Trend Crescita %',
       'categories': [sheet_name, 3, 0, len(sorted_summary)+2, 0],
-      'values':     [sheet_name, 3, trend_col_idx, len(sorted_summary)+2, trend_col_idx],
-      'fill':       {'color': '#1A237E'}
+      'values':      [sheet_name, 3, trend_col_idx, len(sorted_summary)+2, trend_col_idx],
+      'fill':        {'color': '#1A237E'}
     })
-    chart.set_title({'name': 'Analisi Strategica: Crescita Fatturato'})
     summary_sheet.insert_chart('K3', chart)
 
   logger.info(f"📈 Strategic Report saved: {export_path}")

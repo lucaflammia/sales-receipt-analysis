@@ -58,7 +58,7 @@ class FeatureEngineer:
 
     agg_lf = lf.group_by("receipt_id").agg([
       pl.col("line_total").sum().alias("basket_value"),
-      pl.col("product_id").n_unique().alias("basket_size"),
+      pl.len().alias("basket_size"),
       pl.col("is_fresh").any().cast(pl.Int8).alias("has_fresh_produce"),
       pl.col("is_discounted").sum().alias("discounted_item_count"),
       pl.col("weight").filter(pl.col("is_fresh")).sum().alias("fresh_weight_sum"),
@@ -73,6 +73,7 @@ class FeatureEngineer:
     ])
 
     agg_lf = agg_lf.with_columns([
+      (pl.col("basket_size") == 1).cast(pl.Int8).alias("is_single_item_flag"),
       (pl.col("basket_value") / pl.col("basket_size")).alias("basket_value_per_item"),
       (pl.col("discounted_item_count") / pl.col("basket_size")).fill_nan(0).alias("discount_ratio"),
       (pl.col("fresh_weight_sum") / pl.col("total_weight")).fill_nan(0).alias("freshness_weight_ratio"),
@@ -325,25 +326,44 @@ class FeatureEngineer:
     logging.info(f"📊 Top 2D pairwise plots saved: {path}")
 
   def segment_shopping_missions(self, df, features, n_clusters=4):
-    """Applies K-Means with strict infinity/null handling."""
-    # Convert to pandas to use the robust .replace method for inf
+    """
+    Applies a Weighted Scaling approach to ensure physical basket size 
+    is as influential as monetary value.
+    """
+    # Clean Data
     X_df = df.select(features).to_pandas().replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    X_raw = X_df.values
     
-    if len(X_raw) < n_clusters:
+    if len(X_df) < n_clusters:
       return df.with_columns([
         pl.lit(0).alias("cluster_id"),
         pl.lit("Standard Trip").alias("shopping_mission")
       ])
 
+    # Custom Weighted Scaling
+    # We use StandardScaler first to bring everything to mean=0, std=1
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_raw)
-
-    kmeans = KMeans(n_clusters=n_clusters, random_state=self.random_state, n_init=10)
-    clusters = kmeans.fit_predict(X_scaled)
+    X_scaled = scaler.fit_transform(X_df)
     
-    # Centroids for mapping
-    actual_centroids = scaler.inverse_transform(kmeans.cluster_centers_)
+    # Apply Feature Importance Weights
+    # We manually boost 'basket_size' so it can compete with high-value outliers
+    feature_weights = {
+      "basket_size": 1.5,           # Increase sensitivity to item count
+      "basket_value_per_item": 1.0, 
+      "freshness_weight_ratio": 1.2 # Boost fresh-focus
+    }
+    
+    weights_array = np.array([feature_weights.get(f, 1.0) for f in features])
+    X_weighted = X_scaled * weights_array
+
+    # Clustering
+    kmeans = KMeans(n_clusters=n_clusters, random_state=self.random_state, n_init=15)
+    clusters = kmeans.fit_predict(X_weighted)
+    
+    # Centroids for mapping (must inverse the scaling to interpret them)
+    # Note: We un-weight then un-scale to get back to real-world units
+    unweighted_centroids = kmeans.cluster_centers_ / weights_array
+    actual_centroids = scaler.inverse_transform(unweighted_centroids)
+    
     mapping = self._map_centroid_to_mission(actual_centroids, features)
     
     return df.with_columns([
@@ -352,40 +372,41 @@ class FeatureEngineer:
     ])
 
   def _map_centroid_to_mission(self, centroids, features):
-    """Maps K-Means centroids to strategic retail missions using Italian market heuristics."""
     mission_labels = {}
     feat_map = {f: i for i, f in enumerate(features)}
 
     for i, center in enumerate(centroids):
       size = center[feat_map.get("basket_size", 0)]
-      value = center[feat_map.get("basket_value_per_item", 0)]
+      value_per_item = center[feat_map.get("basket_value_per_item", 0)]
       fresh = center[feat_map.get("freshness_weight_ratio", 0)]
 
-      # Detect Professional/Bulk Outliers (High Value + High Volume)
-      if value > 300 or (size > 15 and value > 100):
+      # B2B / Outliers (Keep high for June-style peaks)
+      if size > 30 or (size > 10 and value_per_item > 150):
         mission_labels[i] = "B2B / Bulk Outlier"
       
-      # Detect Stock-up Trips
-      elif size > 6:
+      # Stock-up (Lowered for July/August sensitivity)
+      elif size > 5:
         mission_labels[i] = "Weekly Stock-up"
-          
-      # Detect Fresh-focused Trips
-      elif fresh > 0.4:
+      
+      # Fresh Focus
+      elif fresh > 0.30 and size > 1.2:
         mission_labels[i] = "Daily Fresh Pick"
-          
+      
       # Single-Item Differentiators
-      elif value > 40:
-        mission_labels[i] = "Premium/Specialty Single-Item"
-      elif value < 12:
-        mission_labels[i] = "Quick Convenience"
+      elif size <= 2.5:
+        if value_per_item > 45:
+          mission_labels[i] = "Premium/Specialty Single-Item"
+        elif value_per_item < 12:
+          mission_labels[i] = "Quick Convenience"
+        else:
+          mission_labels[i] = "Standard Mixed Trip"
       else:
         mission_labels[i] = "Standard Mixed Trip"
             
     return mission_labels
 
   def determine_elbow_method(self, df, features, max_k=10):
-    """Determines optimal K with a floor of 3 to avoid mission collapse."""
-    # Strict Cleaning
+    """Determines optimal K with a higher floor and diagnostic logging."""
     data_clean = df.select(features).to_pandas().replace([np.inf, -np.inf], np.nan).fillna(0.0)
     X = StandardScaler().fit_transform(data_clean.values)
     
@@ -396,25 +417,20 @@ class FeatureEngineer:
       distortions.append(kmeanModel.inertia_)
 
     try:
-      # Geometric Knee Detection
       p1 = np.array([K[0], distortions[0]])
       p2 = np.array([K[-1], distortions[-1]])
       distances = [np.abs(np.cross(p2-p1, p1-np.array([K[i], distortions[i]]))) / np.linalg.norm(p2-p1) for i in range(len(K))]
-      
       optimal_k = K[np.argmax(distances)]
       
-      # --- BUSINESS LOGIC NUDGE ---
-      # If the model picks K=2, it's usually just splitting "Cheap vs Expensive".
-      # We force K=4 to ensure we see: 
-      # 1. Cheap, 2. Expensive, 3. Multi-item (Stock-up), 4. Anomalies (B2B)
-      if optimal_k < 4:
-        logger.info(f"K={optimal_k} detected. Nudging to K=4 to prevent mission collapse.")
-        optimal_k = 4
-            
+      # For retail missions, we usually expect at least 4-5 distinct behaviors
+      if optimal_k < 5:
+        logger.info(f"K={optimal_k} is too low for granular missions. Nudging to K=5.")
+        optimal_k = 5
+                
     except Exception as e:
-      logger.warning(f"⚠️ Elbow detection failed: {e}. Fallback to K=4")
-      optimal_k = 4
-        
+      logger.warning(f"⚠️ Elbow detection failed: {e}. Fallback to K=5")
+      optimal_k = 5
+            
     return int(optimal_k)
 
   def plot_mission_impact(self, insights_df, path="plots/mission_impact.png"):
