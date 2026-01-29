@@ -406,30 +406,59 @@ class FeatureEngineer:
     return mission_labels
 
   def determine_elbow_method(self, df, features, max_k=10):
-    """Determines optimal K with a higher floor and diagnostic logging."""
+    """
+    Determines optimal K with a higher floor and diagnostic logging.
+    Includes safeguards for small datasets (e.g., tests or niche areas).
+    """
+
+    # CLEANING & SCALING
+    # Standardize features as K-Means is sensitive to variance
     data_clean = df.select(features).to_pandas().replace([np.inf, -np.inf], np.nan).fillna(0.0)
     X = StandardScaler().fit_transform(data_clean.values)
+    n_samples = X.shape[0]
+
+    # DYNAMIC RANGE SELECTION
+    # K-Means requires n_samples > n_clusters. 
+    # We cap max_k at n_samples - 1 (or 1 if only 1 sample exists).
+    safe_max_k = min(max_k, max(1, n_samples - 1))
     
+    if safe_max_k < 2:
+      logger.warning(f"⚠️ Low sample size (N={n_samples}). Clustering skipped, returning K=1.")
+      return 1
+
     distortions = []
-    K = list(range(1, max_k + 1))
-    for k in K:
+    K_range = list(range(1, safe_max_k + 1))
+
+    # COMPUTE DISTORTIONS
+    for k in K_range:
       kmeanModel = KMeans(n_clusters=k, n_init=10, random_state=self.random_state).fit(X)
       distortions.append(kmeanModel.inertia_)
 
+    # ELBOW CALCULATION (Geometric Distance from Line)
     try:
-      p1 = np.array([K[0], distortions[0]])
-      p2 = np.array([K[-1], distortions[-1]])
-      distances = [np.abs(np.cross(p2-p1, p1-np.array([K[i], distortions[i]]))) / np.linalg.norm(p2-p1) for i in range(len(K))]
-      optimal_k = K[np.argmax(distances)]
+      p1 = np.array([K_range[0], distortions[0]])
+      p2 = np.array([K_range[-1], distortions[-1]])
       
-      # For retail missions, we usually expect at least 4-5 distinct behaviors
-      if optimal_k < 5:
-        logger.info(f"K={optimal_k} is too low for granular missions. Nudging to K=5.")
-        optimal_k = 5
+      distances = [
+        np.abs(np.cross(p2-p1, p1-np.array([K_range[i], distortions[i]]))) / np.linalg.norm(p2-p1) 
+        for i in range(len(K_range))
+      ]
+      optimal_k = K_range[np.argmax(distances)]
+      
+      #  RETAIL MISSION NUDGE
+      # For production/large datasets, we usually expect 5+ distinct behaviors.
+      # We only nudge if the dataset is large enough to support it.
+      if optimal_k < 5 and n_samples > 10:
+        nudged_k = min(5, safe_max_k)
+        if nudged_k != optimal_k:
+          logger.info(f"K={optimal_k} is too low for granular missions. Nudging to K={nudged_k}.")
+          optimal_k = nudged_k
                 
     except Exception as e:
-      logger.warning(f"⚠️ Elbow detection failed: {e}. Fallback to K=5")
-      optimal_k = 5
+        # Fallback logic if the geometry fails
+        fallback_k = min(5, safe_max_k)
+        logger.warning(f"⚠️ Elbow detection failed: {e}. Fallback to K={fallback_k}")
+        optimal_k = fallback_k
             
     return int(optimal_k)
 
