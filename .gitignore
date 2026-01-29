@@ -7,3 +7,5 @@ data/raw/
 data/raw_normalized/*
 data/processed/
 plots/*
+reports/*
+audit/*
