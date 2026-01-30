@@ -374,6 +374,15 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
     consensus = feature_engineer.get_consensus_features(rf_imp, lasso_imp)
 
     if consensus:
+      # Run only during the first month (fit_global) to validate the feature set
+      if fit_global:
+        logger.info("Stat Check: Validating feature independence (VIF)...")
+        # We use the keys from consensus to check only the selected features
+        vif_results = feature_engineer.calculate_vif(df, features=list(consensus.keys()))
+        
+        for feat, score in vif_results.items():
+          status = "PASS" if score < 5 else "HIGH COLLINEARITY"
+          logger.info(f"[VIF Analysis] {feat}: {score:.2f} - {status}")
       df = feature_engineer.add_anomaly_score(df, features=list(consensus.keys()))
       df = feature_engineer.map_severity(df)
 
