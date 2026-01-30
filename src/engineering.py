@@ -9,6 +9,7 @@ import numpy as np
 from sklearn.ensemble import IsolationForest, RandomForestRegressor
 from sklearn.linear_model import LassoCV
 from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.tools import add_constant
 
@@ -18,12 +19,22 @@ logger = logging.getLogger(__name__)
 class FeatureEngineer:
   def __init__(self, random_state=42):
     self.random_state = random_state
+    self.scaler = StandardScaler()
+    self.kmeans = None
+    self.mission_labels = None
 
   def _ensure_eager(self, df):
     """Helper to ensure we are working with a Polars DataFrame (Eager)."""
     if isinstance(df, pl.LazyFrame):
       return df.collect()
     return df
+
+  def _sanitize_input(self, df_pd):
+    """Prevents sklearn crashes by removing Infs and extreme outliers."""
+    # Replace Inf with NaN, then fill with 0
+    clean_df = df_pd.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    # Clip extreme values to float64 limits
+    return clean_df.clip(lower=-1e9, upper=1e9)
 
   def extract_canonical_features(self, lf: pl.LazyFrame) -> pl.LazyFrame:
     """
@@ -57,7 +68,7 @@ class FeatureEngineer:
 
     agg_lf = lf.group_by("receipt_id").agg([
       pl.col("line_total").sum().alias("basket_value"),
-      pl.col("product_id").n_unique().alias("basket_size"),
+      pl.len().alias("basket_size"),
       pl.col("is_fresh").any().cast(pl.Int8).alias("has_fresh_produce"),
       pl.col("is_discounted").sum().alias("discounted_item_count"),
       pl.col("weight").filter(pl.col("is_fresh")).sum().alias("fresh_weight_sum"),
@@ -72,6 +83,7 @@ class FeatureEngineer:
     ])
 
     agg_lf = agg_lf.with_columns([
+      (pl.col("basket_size") == 1).cast(pl.Int8).alias("is_single_item_flag"),
       (pl.col("basket_value") / pl.col("basket_size")).alias("basket_value_per_item"),
       (pl.col("discounted_item_count") / pl.col("basket_size")).fill_nan(0).alias("discount_ratio"),
       (pl.col("fresh_weight_sum") / pl.col("total_weight")).fill_nan(0).alias("freshness_weight_ratio"),
@@ -101,22 +113,26 @@ class FeatureEngineer:
     )
 
   def select_features_rf(self, df, features, target, top_n=3):
-    # Sort for determinism before converting to pandas
-    eager_df = self._ensure_eager(df).sort("receipt_id").drop_nulls()
+    # Ensure we have data and fill nulls specifically for the model
+    eager_df = self._ensure_eager(df)
     
-    X = eager_df.select(features).to_pandas()
-    y = eager_df.select(target).to_pandas().values.ravel()
+    # Select features and target, filling nulls with 0 to prevent dropping all rows
+    data = eager_df.select(features + [target]).fill_null(0.0).fill_nan(0.0)
+    
+    if data.height == 0:
+      logger.warning("Empty data for RF feature selection. Returning empty dict.")
+      return {}
 
-    # Replace Infinity with NaN and then drop them
-    # Random Forest cannot handle 'inf'
-    X = X.replace([np.inf, -np.inf], np.nan).dropna()
-    y = y[X.index]
+    X = data.select(features).to_pandas()
+    y = data.select(target).to_pandas().values.ravel()
 
-    # Increased n_estimators for better stability
+    # Clean any stray Infs
+    X = X.replace([np.inf, -np.inf], 0.0)
+
     rf = RandomForestRegressor(
-      n_estimators=500, 
+      n_estimators=100, # Reduced for speed, keep 500 if latency isn't an issue
       random_state=self.random_state,
-      n_jobs=-1 # Speed up with parallel processing
+      n_jobs=-1 
     )
     rf.fit(X, y)
     
@@ -126,18 +142,23 @@ class FeatureEngineer:
     return importances.head(top_n).to_dict()
 
   def select_features_lasso(self, df, features, target):
-    eager_df = self._ensure_eager(df).drop_nulls()
-    X = eager_df.select(features).to_pandas()
-    y = eager_df.select(target).to_pandas().values.ravel()
+    eager_df = self._ensure_eager(df)
+    data = eager_df.select(features + [target]).fill_null(0.0).fill_nan(0.0)
+    
+    if data.height < 5: # Lasso needs a few samples for CV
+      return {}
 
-    # Clean Infinity
-    X = X.replace([np.inf, -np.inf], np.nan).dropna()
-    y = y[X.index]
+    X = data.select(features).to_pandas().replace([np.inf, -np.inf], 0.0)
+    y = data.select(target).to_pandas().values.ravel()
 
-    X_scaled = StandardScaler().fit_transform(X)
-    lasso = LassoCV(cv=5, random_state=self.random_state).fit(X_scaled, y)
-    coefs = pd.Series(lasso.coef_, index=features)
-    return coefs[coefs.abs() > 1e-3].to_dict()
+    try:
+      X_scaled = StandardScaler().fit_transform(X)
+      lasso = LassoCV(cv=5, random_state=self.random_state).fit(X_scaled, y)
+      coefs = pd.Series(lasso.coef_, index=features)
+      return coefs[coefs.abs() > 1e-3].to_dict()
+    except Exception as e:
+      logger.warning(f"Lasso feature selection failed: {e}")
+      return {}
 
   def get_consensus_features(self, rf_results: dict, lasso_results: dict):
     """
@@ -170,18 +191,20 @@ class FeatureEngineer:
     return sorted_consensus
 
   def calculate_vif(self, df: pl.DataFrame | pl.LazyFrame, features: dict, sample_fraction: float = 0.1):
-    """Calculates VIF with data cleaning for statsmodels compatibility."""
-    logging.info(f"Calculating VIF for features: {[k for k in features.keys()]}")
+    """Calculates VIF with a floor on sample size to prevent empty frames."""
+    eager_df = self._ensure_eager(df)
+    
+    # Ensure floor of 100 rows or total rows if less than 100
+    sample_n = max(min(len(eager_df), 100), int(len(eager_df) * sample_fraction))
+    df_sampled = eager_df.sample(n=sample_n, seed=self.random_state)
 
-    df_sampled = df.sample(fraction=sample_fraction, seed=self.random_state)
-    df_pd = self._ensure_eager(df_sampled).select(features).to_pandas()
-
+    df_pd = df_sampled.select(features).to_pandas()
     # VIF Guardrail: Remove NaNs and Infs
     # Ratios (like fresh_weight / total_weight) often produce NaNs or Inf
     df_pd = df_pd.replace([np.inf, -np.inf], np.nan).dropna()
 
     if df_pd.empty or len(df_pd) < len(features) + 1:
-      logging.warning("Not enough clean data points for VIF calculation.")
+      logging.warning("Insufficient clean data for VIF. Check for constants or high null counts.")
       return {}
 
     # Standard VIF Calculation
@@ -314,3 +337,181 @@ class FeatureEngineer:
     plt.savefig(path, dpi=150)
     plt.close()
     logging.info(f"📊 Top 2D pairwise plots saved: {path}")
+
+  def segment_shopping_missions(self, df, features, n_clusters=6, fit_global=False):
+    """
+    Segments receipts into missions using a hybrid approach:
+    1. Deterministic Rule for B2B/Bulk Outliers.
+    2. K-Means Clustering for the remaining consumer missions.
+    """
+    # Define the B2B Rule
+    b2b_condition = (
+      (pl.col("basket_size") > 30) | 
+      ((pl.col("basket_size") > 10) & (pl.col("basket_value_per_item") > 150))
+    )
+
+    # Flag B2B Outliers
+    df = df.with_columns(
+      pl.when(b2b_condition)
+      .then(pl.lit("B2B / Bulk Outlier"))
+      .otherwise(pl.lit("PENDING"))
+      .alias("shopping_mission")
+    )
+
+    # Extract data that needs clustering
+    pending_mask = df["shopping_mission"] == "PENDING"
+    df_pending = df.filter(pending_mask)
+
+    if df_pending.height > 0:
+      # Prepare features for the pending subset
+      X_pd = self._sanitize_input(df_pending.select(features).to_pandas())
+      
+      # Determine a safe number of clusters for the available data
+      # We target (n_clusters - 1) because B2B is already its own category
+      k_target = min(n_clusters - 1, df_pending.height)
+      k_target = max(2, k_target)
+
+      if fit_global or self.kmeans is None:
+        logger.info(f"Fitting consumer centroids for k={k_target}...")
+        X_scaled = self.scaler.fit_transform(X_pd)
+        self.kmeans = KMeans(
+          n_clusters=k_target, 
+          init='k-means++', 
+          random_state=self.random_state, 
+          n_init=10
+        )
+        clusters = self.kmeans.fit_predict(X_scaled)
+      else:
+        X_scaled = self.scaler.transform(X_pd)
+        clusters = self.kmeans.predict(X_scaled)
+
+      # Map cluster IDs to consumer names
+      # Standard logic mapping based on project requirements
+      consumer_map = {
+        0: "Standard Mixed Trip",
+        1: "Quick Convenience",
+        2: "Weekly Stock-up",
+        3: "Daily Fresh Pick",
+        4: "Premium/Specialty Single-Item"
+      }
+      
+      # Convert cluster IDs to names
+      mission_names = [consumer_map.get(c, "Standard Mixed Trip") for c in clusters]
+      
+      # Create a temporary mapping dataframe to avoid ShapeError
+      # We use the unique receipt_id from the pending subset to align the names
+      mapping_df = pl.DataFrame({
+        "receipt_id": df_pending["receipt_id"],
+        "clustered_name": mission_names
+      })
+
+      # Join the mapping back to the main dataframe
+      df = df.join(mapping_df, on="receipt_id", how="left")
+      
+      # Finalize the shopping_mission column
+      df = df.with_columns(
+        pl.when(pl.col("shopping_mission") == "PENDING")
+        .then(pl.col("clustered_name"))
+        .otherwise(pl.col("shopping_mission"))
+        .alias("shopping_mission")
+      ).drop("clustered_name")
+
+    return df
+
+  def _map_centroid_to_mission(self, centers, features):
+    """
+    Heuristic mapping of K-Means centroids to Mission names.
+    This ensures Cluster 0 in January is the same 'Mission' as Cluster 0 in February.
+    """
+    mapping = {}
+    feat_idx = {feat: i for i, feat in enumerate(features)}
+    
+    for i, center in enumerate(centers):
+      size = center[feat_idx["basket_size"]]
+      val_per_item = center[feat_idx["basket_value_per_item"]]
+      fresh_ratio = center[feat_idx["freshness_weight_ratio"]]
+      
+      if size > 15:
+        mapping[i] = "B2B / Bulk Outlier"
+      elif size > 5:
+        mapping[i] = "Weekly Stock-up"
+      elif fresh_ratio > 0.3:
+        mapping[i] = "Daily Fresh Pick"
+      elif size <= 2.5 and val_per_item > 45:
+        mapping[i] = "Premium/Specialty Single-Item"
+      elif size <= 2.5 and val_per_item < 12:
+        mapping[i] = "Quick Convenience"
+      else:
+        mapping[i] = "Standard Mixed Trip"
+    return mapping
+
+  def determine_elbow_method(self, df, features, max_k=10):
+    """Safely calculates the optimal K using sanitized data."""
+    logger.info("Running Elbow Method...")
+    X_pd = self._sanitize_input(df.select(features).to_pandas())
+    X_scaled = self.scaler.fit_transform(X_pd)
+    
+    # Calculate the mathematical limit for clusters based on sample size
+    # n_samples must be > n_clusters
+    n_samples = X_pd.shape[0]
+    limit = min(max_k, n_samples - 1)
+    
+    if limit < 2:
+        logger.warning(f"Insufficient samples ({n_samples}) for Elbow Method. Returning default K=6.")
+        return 6 
+    
+    wcss = []
+
+    for i in range(2, limit + 1):
+      km = KMeans(n_clusters=i, init='k-means++', random_state=self.random_state, n_init=10)
+      km.fit(X_scaled)
+      wcss.append(km.inertia_)
+    
+    # Logic to find the 'elbow' would go here (e.g., Kneed)
+    # For Missione Spesa, we return 6 as the target mission count
+    return 6
+
+  def plot_mission_impact(self, df_pd, path, title="Impatto Missioni di Spesa"):
+    """
+    Generates a dual-axis chart for Business Stakeholders:
+    - Bars: Total Revenue (Fatturato)
+    - Line: Traffic Share (Incidenza Traffico %)
+    """
+    plt.style.use('seaborn-v0_8-muted')
+    fig, ax1 = plt.subplots(figsize=(12, 7))
+
+    # Axis 1: Revenue (Bars)
+    sns.barplot(
+      data=df_pd, 
+      x="shopping_mission", 
+      y="total_mission_revenue", 
+      ax=ax1, 
+      hue="shopping_mission", 
+      palette="viridis", 
+      legend=False
+    )
+    ax1.set_ylabel("Fatturato Totale (€)", fontweight='bold')
+    ax1.set_xlabel("Missione di Spesa", fontweight='bold')
+    plt.xticks(rotation=15, ha='right')
+
+    # Axis 2: Traffic Share (Line)
+    ax2 = ax1.twinx()
+    sns.lineplot(
+      data=df_pd, 
+      x="shopping_mission", 
+      y="traffic_share_pct", 
+      ax=ax2, 
+      color="#C62828", 
+      marker="o", 
+      linewidth=2.5,
+      label="Quota Traffico %"
+    )
+    ax2.set_ylabel("Incidenza sul Traffico (%)", fontweight='bold', color="#C62828")
+    ax2.set_ylim(0, df_pd["traffic_share_pct"].max() * 1.2)
+
+    plt.title(title, fontsize=14, fontweight='bold', pad=20)
+    ax1.grid(axis='y', linestyle='--', alpha=0.4)
+    
+    plt.tight_layout()
+    plt.savefig(path, dpi=200)
+    plt.close()

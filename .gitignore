@@ -3,3 +3,9 @@ sync_secrets.sh
 update_env.py
 credentials.json
 __pycache__/
+data/raw/
+data/raw_normalized/*
+data/processed/
+plots/*
+reports/*
+audit/*
