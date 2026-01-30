@@ -191,18 +191,20 @@ class FeatureEngineer:
     return sorted_consensus
 
   def calculate_vif(self, df: pl.DataFrame | pl.LazyFrame, features: dict, sample_fraction: float = 0.1):
-    """Calculates VIF with data cleaning for statsmodels compatibility."""
-    logging.info(f"Calculating VIF for features: {[k for k in features.keys()]}")
+    """Calculates VIF with a floor on sample size to prevent empty frames."""
+    eager_df = self._ensure_eager(df)
+    
+    # Ensure floor of 100 rows or total rows if less than 100
+    sample_n = max(min(len(eager_df), 100), int(len(eager_df) * sample_fraction))
+    df_sampled = eager_df.sample(n=sample_n, seed=self.random_state)
 
-    df_sampled = df.sample(fraction=sample_fraction, seed=self.random_state)
-    df_pd = self._ensure_eager(df_sampled).select(features).to_pandas()
-
+    df_pd = df_sampled.select(features).to_pandas()
     # VIF Guardrail: Remove NaNs and Infs
     # Ratios (like fresh_weight / total_weight) often produce NaNs or Inf
     df_pd = df_pd.replace([np.inf, -np.inf], np.nan).dropna()
 
     if df_pd.empty or len(df_pd) < len(features) + 1:
-      logging.warning("Not enough clean data points for VIF calculation.")
+      logging.warning("Insufficient clean data for VIF. Check for constants or high null counts.")
       return {}
 
     # Standard VIF Calculation
