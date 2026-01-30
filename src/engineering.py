@@ -337,29 +337,84 @@ class FeatureEngineer:
     logging.info(f"📊 Top 2D pairwise plots saved: {path}")
 
   def segment_shopping_missions(self, df, features, n_clusters=6, fit_global=False):
-    X_pd = self._sanitize_input(df.select(features).to_pandas())
-    
-    if fit_global or self.kmeans is None:
-      logger.info(f"Fitting new global centroids for {n_clusters} clusters...")
-      X_scaled = self.scaler.fit_transform(X_pd)
-      self.kmeans = KMeans(n_clusters=n_clusters, init='k-means++', random_state=self.random_state, n_init=10)
-      self.kmeans.fit(X_scaled)
-    else:
-      X_scaled = self.scaler.transform(X_pd)
-
-    clusters = self.kmeans.predict(X_scaled)
-    
-    # Simple heuristic mapping for the mission names
-    # In production, we might map cluster IDs to names based on centroid centers
-    cluster_names = {
-      0: "Quick Convenience", 1: "Standard Mixed Trip", 
-      2: "Weekly Stock-up", 3: "Daily Fresh Pick",
-      4: "Premium/Specialty Single-Item", 5: "B2B / Bulk Outlier"
-    }
-    
-    return df.with_columns(
-      pl.Series(name="cluster", values=clusters).replace(cluster_names).alias("shopping_mission")
+    """
+    Segments receipts into missions using a hybrid approach:
+    1. Deterministic Rule for B2B/Bulk Outliers.
+    2. K-Means Clustering for the remaining consumer missions.
+    """
+    # Define the B2B Rule
+    b2b_condition = (
+      (pl.col("basket_size") > 30) | 
+      ((pl.col("basket_size") > 10) & (pl.col("basket_value_per_item") > 150))
     )
+
+    # Flag B2B Outliers
+    df = df.with_columns(
+      pl.when(b2b_condition)
+      .then(pl.lit("B2B / Bulk Outlier"))
+      .otherwise(pl.lit("PENDING"))
+      .alias("shopping_mission")
+    )
+
+    # Extract data that needs clustering
+    pending_mask = df["shopping_mission"] == "PENDING"
+    df_pending = df.filter(pending_mask)
+
+    if df_pending.height > 0:
+      # Prepare features for the pending subset
+      X_pd = self._sanitize_input(df_pending.select(features).to_pandas())
+      
+      # Determine a safe number of clusters for the available data
+      # We target (n_clusters - 1) because B2B is already its own category
+      k_target = min(n_clusters - 1, df_pending.height)
+      k_target = max(2, k_target)
+
+      if fit_global or self.kmeans is None:
+        logger.info(f"Fitting consumer centroids for k={k_target}...")
+        X_scaled = self.scaler.fit_transform(X_pd)
+        self.kmeans = KMeans(
+          n_clusters=k_target, 
+          init='k-means++', 
+          random_state=self.random_state, 
+          n_init=10
+        )
+        clusters = self.kmeans.fit_predict(X_scaled)
+      else:
+        X_scaled = self.scaler.transform(X_pd)
+        clusters = self.kmeans.predict(X_scaled)
+
+      # Map cluster IDs to consumer names
+      # Standard logic mapping based on project requirements
+      consumer_map = {
+        0: "Standard Mixed Trip",
+        1: "Quick Convenience",
+        2: "Weekly Stock-up",
+        3: "Daily Fresh Pick",
+        4: "Premium/Specialty Single-Item"
+      }
+      
+      # Convert cluster IDs to names
+      mission_names = [consumer_map.get(c, "Standard Mixed Trip") for c in clusters]
+      
+      # Create a temporary mapping dataframe to avoid ShapeError
+      # We use the unique receipt_id from the pending subset to align the names
+      mapping_df = pl.DataFrame({
+        "receipt_id": df_pending["receipt_id"],
+        "clustered_name": mission_names
+      })
+
+      # Join the mapping back to the main dataframe
+      df = df.join(mapping_df, on="receipt_id", how="left")
+      
+      # Finalize the shopping_mission column
+      df = df.with_columns(
+        pl.when(pl.col("shopping_mission") == "PENDING")
+        .then(pl.col("clustered_name"))
+        .otherwise(pl.col("shopping_mission"))
+        .alias("shopping_mission")
+      ).drop("clustered_name")
+
+    return df
 
   def _map_centroid_to_mission(self, centers, features):
     """
@@ -394,13 +449,24 @@ class FeatureEngineer:
     X_pd = self._sanitize_input(df.select(features).to_pandas())
     X_scaled = self.scaler.fit_transform(X_pd)
     
+    # Calculate the mathematical limit for clusters based on sample size
+    # n_samples must be > n_clusters
+    n_samples = X_pd.shape[0]
+    limit = min(max_k, n_samples - 1)
+    
+    if limit < 2:
+        logger.warning(f"Insufficient samples ({n_samples}) for Elbow Method. Returning default K=6.")
+        return 6 
+    
     wcss = []
-    for i in range(1, max_k + 1):
+
+    for i in range(2, limit + 1):
       km = KMeans(n_clusters=i, init='k-means++', random_state=self.random_state, n_init=10)
       km.fit(X_scaled)
       wcss.append(km.inertia_)
     
-    # In a real scenario, use Kneed library here. For now, we return 6 as default.
+    # Logic to find the 'elbow' would go here (e.g., Kneed)
+    # For Missione Spesa, we return 6 as the target mission count
     return 6
 
   def plot_mission_impact(self, df_pd, path, title="Impatto Missioni di Spesa"):
