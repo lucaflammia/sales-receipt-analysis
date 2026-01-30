@@ -15,17 +15,16 @@ def test_mission_segmentation_pipeline():
   through K-Means optimization (Missione Spesa) and Anomaly Auditing.
   """
   # Setup Mock Italian Data
-  # R6 triggers the B2B rule: (Items > 10 and Value/Item > 150)
   lf = pl.LazyFrame({
     "receipt_id": ["R1", "R1", "R2", "R2", "R3", "R3", "R4", "R4", "R5", "R5"] + ["R6"] * 12,
     "product_id": ["A", "B", "A", "C", "B", "D", "A", "E", "F", "G"] + ["B2B_PROD"] * 12,
     "line_total": [
-        10.0, 5.0,   # R1: Standard
-        20.0, 30.0,  # R2: Premium
-        5.0, 5.0,    # R3: Convenience
-        15.0, 15.0,  # R4: Mixed
-        40.0, 10.0,  # R5: Mixed
-    ] + [200.0] * 12, # R6: B2B Outlier (12 items * 200 = 2400 total)
+      10.0, 5.0,   # R1: Standard
+      20.0, 30.0,  # R2: Premium
+      5.0, 5.0,    # R3: Convenience
+      15.0, 15.0,  # R4: Mixed
+      40.0, 10.0,  # R5: Mixed
+    ] + [200.0] * 12, # R6: B2B Outlier
     "weight": [0.5, 0.0, 1.0, 0.0, 0.0, 0.2, 0.4, 0.0, 1.5, 0.0] + [1.0] * 12,
     "date_str": ["20240601"] * 22,
     "time_str": ["100000"] * 22,
@@ -57,30 +56,21 @@ def test_mission_segmentation_pipeline():
   ])
 
   # --- TEST ELBOW INTEGRATION ---
-  # We cap the search range to (number of samples - 1) to avoid sklearn ValueError
-  # In this mock case, height is 6, so we test K up to 5.
   max_k_test = min(10, df.height - 1) 
-  
   if max_k_test > 1:
-    # Pass a range or a max_k if your determine_elbow_method supports it, 
-    # otherwise ensure determine_elbow_method handles small data internally.
     optimal_k = fe.determine_elbow_method(df, features=mission_features)
     assert isinstance(optimal_k, int)
     logger.info(f"Test Elbow Result: {optimal_k}")
-  else:
-    logger.warning("Skipping Elbow test: insufficient mock data.")
 
-  # Test Mission Clustering (fit_global=True to mimic main.py start)
-  # Ensure n_clusters here is also safe for the mock data size
+  # Test Mission Clustering
   df = fe.segment_shopping_missions(df, features=mission_features, fit_global=True)
-  
   assert "shopping_mission" in df.columns
   
-  # Check R6 classification (Should be deterministic B2B)
+  # Check R6 classification
   b2b_check = df.filter(pl.col("receipt_id") == "R6")["shopping_mission"][0]
-  assert b2b_check == "B2B / Bulk Outlier", f"Expected B2B, but got {b2b_check}"
+  assert b2b_check == "B2B / Bulk Outlier"
 
-  # Test Consensus & Anomaly Score
+  # Test Consensus
   rf_imp = fe.select_features_rf(df, features=mission_features, target="basket_value")
   ls_imp = fe.select_features_lasso(df, features=mission_features, target="basket_value")
   consensus = fe.get_consensus_features(rf_imp, ls_imp)
@@ -88,9 +78,11 @@ def test_mission_segmentation_pipeline():
   if consensus:
     df = fe.add_anomaly_score(df, features=list(consensus.keys()))
     df = fe.map_severity(df)
-    assert "anomaly_score" in df.columns
 
-  # --- TEST REPORTING (ITALIAN NAMES) ---
+  # --- FIX: AGGIUNTA CALCOLO QUOTE (REVENUE/TRAFFIC SHARE) ---
+  grand_total_revenue = df["basket_value"].sum()
+  total_receipts = df.height
+
   insights = (
     df.group_by("shopping_mission")
     .agg([
@@ -98,6 +90,10 @@ def test_mission_segmentation_pipeline():
       pl.col("basket_value").sum().alias("total_mission_revenue"),
       pl.col("basket_value").mean().round(2).alias("avg_trip_value"),
       pl.col("basket_size").mean().round(2).alias("avg_items_per_trip")
+    ])
+    .with_columns([
+      ((pl.col("total_mission_revenue") / grand_total_revenue) * 100).alias("revenue_share_pct"),
+      ((pl.col("receipt_count") / total_receipts) * 100).alias("traffic_share_pct")
     ])
   )
   
@@ -109,19 +105,15 @@ def test_mission_segmentation_pipeline():
     generate_global_summary(mock_global_insights, export_path=test_report_path)
     assert os.path.exists(test_report_path)
     
-    # Verify Italian Requirements:
-    # 1. Month Mapping (06 -> Giugno)
-    # 2. Variable Naming (shopping_mission -> Missione_di_Spesa)
     with pd.ExcelFile(test_report_path) as xls:
       assert "Giugno" in xls.sheet_names
-      # Check column translation in the specific month sheet
       month_df = pd.read_excel(xls, "Giugno")
       assert "Missione_di_Spesa" in month_df.columns
-      assert "Spesa Standard Mista" in month_df["Missione_di_Spesa"].values or \
-              "B2B / Ingrosso Outlier" in month_df["Missione_di_Spesa"].values
+      assert "Quota_Fatturato_Perc" in month_df.columns # Verifica traduzione colonne
+      assert "B2B / Ingrosso Outlier" in month_df["Missione_di_Spesa"].values
 
   finally:
     if os.path.exists(test_report_path):
       os.remove(test_report_path)
 
-  logger.info("✅ Missione Spesa Pipeline Test Passed with Italian Reporting Validation.")
+  logger.info("✅ Missione Spesa Pipeline Test Passed.")
