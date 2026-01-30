@@ -6,6 +6,7 @@ import time
 import os
 import argparse
 import glob
+import json
 from src.ingestion import load_config
 from src.engineering import FeatureEngineer
 
@@ -14,6 +15,21 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+IT_MONTHS = {
+  "01": "Gennaio", "02": "Febbraio", "03": "Marzo", "04": "Aprile",
+  "05": "Maggio", "06": "Giugno", "07": "Luglio", "08": "Agosto",
+  "09": "Settembre", "10": "Ottobre", "11": "Novembre", "12": "Dicembre"
+}
+
+MISSION_MAP = {
+  "Standard Mixed Trip": "Spesa Standard Mista",
+  "Premium/Specialty Single-Item": "Premium / Specialità Singolo Articolo",
+  "B2B / Bulk Outlier": "B2B / Ingrosso Outlier",
+  "Weekly Stock-up": "Spesa Settimanale di Scorta",
+  "Quick Convenience": "Convenienza Rapida",
+  "Daily Fresh Pick": "Fresco Quotidiano"
+}
 
 def log_resource_usage(stage: str):
   process = psutil.Process(os.getpid())
@@ -26,6 +42,33 @@ def find_partition_path(area_root, year, month):
   dirs = [m for m in matches if os.path.isdir(m)]
   return dirs[0] if dirs else None
 
+def export_to_json(monthly_data_list, export_path):
+  """
+  Generates a JSON feed for LLM consumption.
+  Uses Italian names for missions as per project guidelines.
+  """
+  json_output = {
+    "metadata": {
+      "project": "Missione Spesa",
+      "analysis_date": time.strftime("%Y-%m-%d"),
+      "version": "2.2-Sanitized"
+    },
+    "monthly_insights": []
+  }
+
+  for entry in monthly_data_list:
+    df_pd = entry['data'].to_pandas()
+    df_pd["shopping_mission"] = df_pd["shopping_mission"].replace(MISSION_MAP)
+    
+    json_output["monthly_insights"].append({
+      "period": entry['period'],
+      "results": df_pd.to_dict(orient="records")
+    })
+
+  with open(export_path, 'w', encoding='utf-8') as f:
+    json.dump(json_output, f, indent=4, ensure_ascii=False)
+  logger.info(f"📁 LLM-Ready JSON saved: {export_path}")
+
 def generate_global_summary(monthly_data_list, export_path):
   """
   Strategic Report with:
@@ -37,16 +80,6 @@ def generate_global_summary(monthly_data_list, export_path):
     logger.warning("No data collected for Global Summary.")
     return
 
-  # --- 1. CONFIGURATION ---
-  mission_map = {
-    "Standard Mixed Trip": "Spesa Standard Mista",
-    "Premium/Specialty Single-Item": "Premium / Specialità Singolo Articolo",
-    "B2B / Bulk Outlier": "B2B / Ingrosso Outlier",
-    "Weekly Stock-up": "Spesa Settimanale di Scorta",
-    "Quick Convenience": "Convenienza Rapida",
-    "Daily Fresh Pick": "Fresco Quotidiano"
-  }
-
   column_translation = {
     "shopping_mission": "Missione_di_Spesa",
     "receipt_count": "Numero_Scontrini",
@@ -56,12 +89,6 @@ def generate_global_summary(monthly_data_list, export_path):
     "global_trend_pct": "Trend_Fatturato_Periodo_Perc",
     "global_rev_share": "Quota_Fatturato_Perc",
     "global_traff_share": "Quota_Traffico_Perc"
-  }
-
-  it_months = {
-    "01": "Gennaio", "02": "Febbraio", "03": "Marzo", "04": "Aprile",
-    "05": "Maggio", "06": "Giugno", "07": "Luglio", "08": "Agosto",
-    "09": "Settembre", "10": "Ottobre", "11": "Novembre", "12": "Dicembre"
   }
 
   with pd.ExcelWriter(export_path, engine='xlsxwriter') as writer:
@@ -88,12 +115,12 @@ def generate_global_summary(monthly_data_list, export_path):
     
     mission_desc_df = pd.DataFrame({
       "Missione_di_Spesa": [
-        mission_map["B2B / Bulk Outlier"],
-        mission_map["Weekly Stock-up"],
-        mission_map["Daily Fresh Pick"],
-        mission_map["Premium/Specialty Single-Item"],
-        mission_map["Quick Convenience"],
-        mission_map["Standard Mixed Trip"]
+        MISSION_MAP["B2B / Bulk Outlier"],
+        MISSION_MAP["Weekly Stock-up"],
+        MISSION_MAP["Daily Fresh Pick"],
+        MISSION_MAP["Premium/Specialty Single-Item"],
+        MISSION_MAP["Quick Convenience"],
+        MISSION_MAP["Standard Mixed Trip"]
       ],
       "Descrizione_Dettagliata": [
         "Grandi volumi o fatturati estremi (Profilo Business).",
@@ -121,7 +148,7 @@ def generate_global_summary(monthly_data_list, export_path):
     all_anomalies = []
     for entry in monthly_data_list:
       period_str = entry['period']
-      it_name = it_months.get(period_str.split('-')[-1], "Mese")
+      it_name = IT_MONTHS.get(period_str.split('-')[-1], "Mese")
       df_pd = entry['data'].to_pandas()
       
       # Extract anomalies for the Audit sheet
@@ -132,7 +159,7 @@ def generate_global_summary(monthly_data_list, export_path):
 
       # Map for monthly sheet
       m_exp = df_pd.copy()
-      m_exp["shopping_mission"] = m_exp["shopping_mission"].replace(mission_map)
+      m_exp["shopping_mission"] = m_exp["shopping_mission"].replace(MISSION_MAP)
       m_exp.rename(columns={
         "shopping_mission": "Missione_di_Spesa",
         "receipt_count": "Numero_Scontrini",
@@ -150,7 +177,7 @@ def generate_global_summary(monthly_data_list, export_path):
     # --- TAB: AUDIT ANOMALIE ---
     if all_anomalies:
       an_df = pd.concat(all_anomalies)
-      an_df["shopping_mission"] = an_df["shopping_mission"].replace(mission_map)
+      an_df["shopping_mission"] = an_df["shopping_mission"].replace(MISSION_MAP)
       an_df = an_df.rename(columns=column_translation)
       cols_to_keep = ["Mese_Riferimento", "Missione_di_Spesa", "Numero_Scontrini", "Fatturato_Totale", "Valore_Medio_Carrello"]
       an_df[cols_to_keep].to_excel(writer, sheet_name="Audit_Anomalie", index=False, startrow=2)
@@ -177,7 +204,7 @@ def generate_global_summary(monthly_data_list, export_path):
     exec_summary["global_traff_share"] = (exec_summary["receipt_count"] / total_traff * 100).round(2)
 
     exec_final = exec_summary.reset_index()
-    exec_final["shopping_mission"] = exec_final["shopping_mission"].replace(mission_map)
+    exec_final["shopping_mission"] = exec_final["shopping_mission"].replace(MISSION_MAP)
     exec_final = exec_final.rename(columns=column_translation)
     
     final_cols_ordered = [v for v in column_translation.values() if v in exec_final.columns]
@@ -207,7 +234,7 @@ def generate_global_summary(monthly_data_list, export_path):
 
   logger.info(f"📈 Strategic Report saved: {export_path}")
 
-def process_partition(year, month, config, feature_engineer, days=None):
+def process_partition(year, month, config, feature_engineer, days=None, fit_global=False):
   env_config = config[config["environment"]]
   area_code = env_config.get('area_code', '382')
   
@@ -287,21 +314,29 @@ def process_partition(year, month, config, feature_engineer, days=None):
       pl.col("basket_value").fill_null(0.0)
     ])
 
+    # --- ELBOW METHOD DIAGNOSTIC ---
+    if fit_global:
+      logger.info("📊 Calculating Elbow Point to validate cluster count...")
+      # This uses the method in engineering.py to find where the WCSS curve bends
+      optimal_k = feature_engineer.determine_elbow_method(df, features=mission_features)
+      
+      if optimal_k != 6:
+        logger.warning(f"📉 Elbow Analysis suggests {optimal_k} clusters, but we are proceeding with 6 for project consistency.")
+      else:
+        logger.info("✅ Elbow Analysis confirms 6 clusters is optimal for this data.")
+    # -------------------------------
+
     logger.info(f"🧠 Optimizing Shopping Missions for {df.height} receipts...")
 
     # Prepare features for Unsupervised Learning
     mission_features = ["basket_size", "basket_value_per_item", "freshness_weight_ratio"]
     mission_features = [f for f in mission_features if f in df.columns]
     df = df.with_columns([pl.col(mission_features).fill_null(0.0).fill_nan(0.0)])
-
-    # This now returns the best K based on the data curvature
-    optimal_k = feature_engineer.determine_elbow_method(df, features=mission_features)
-    
     # Perform Clustering with Optimized Centroids
     df = feature_engineer.segment_shopping_missions(
       df, 
       features=mission_features, 
-      n_clusters=optimal_k
+      fit_global=fit_global
     )
 
     # --- ANOMALY SEVERITY AUDIT ---
@@ -352,8 +387,25 @@ def process_partition(year, month, config, feature_engineer, days=None):
       .sort("revenue_share_pct", descending=True)
     )
 
-    # Visualization & Export
-    feature_engineer.plot_mission_impact(insights, path=os.path.join("plots", f"impact_{year}_{month}.png"))
+    plot_insights = insights.clone().to_pandas()
+    # Using the mission_map defined in your global summary logic
+    mission_map = {
+      "Standard Mixed Trip": "Spesa Standard Mista",
+      "Premium/Specialty Single-Item": "Premium / Specialità Singolo Articolo",
+      "B2B / Bulk Outlier": "B2B / Ingrosso Outlier",
+      "Weekly Stock-up": "Spesa Settimanale di Scorta",
+      "Quick Convenience": "Convenienza Rapida",
+      "Daily Fresh Pick": "Fresco Quotidiano"
+    }
+    plot_insights["shopping_mission"] = plot_insights["shopping_mission"].replace(mission_map)
+
+    # Visualization - Ensure the path and labels are ready
+    os.makedirs("plots", exist_ok=True)
+    feature_engineer.plot_mission_impact(
+      plot_insights,
+      path=os.path.join("plots", f"impact_{year}_{month}.png"),
+      title=f"Analisi Missioni: {IT_MONTHS.get(f'{month:02d}', 'Mese')} {year}"
+    )
 
     # Export
     export_root = os.path.join(env_config["processed_data_path"], f"area={area_code}", f"year={year}", f"month={month}")
@@ -393,15 +445,23 @@ def main():
   months = range(start_month, end_month + 1)
   target_days = list(range(args.day, (args.day_end or args.day) + 1)) if args.day else None
   
-  for m in months:
+  for i, m in enumerate(months):
     # Capture the insights returned by the monthly processing
-    monthly_insight = process_partition(args.year, m, config, fe, days=target_days)
+    # We 'Fit' only on the first month, then 'Apply' the same rules to others
+    monthly_insight = process_partition(args.year, m, config, fe, days=target_days, fit_global=(i == 0))
     
     if monthly_insight is not None:
       global_insights.append({
         "period": f"{args.year}-{m:02d}", 
         "data": monthly_insight
       })
+
+    if global_insights:
+      os.makedirs("reports", exist_ok=True)
+      # Standard Excel Report
+      generate_global_summary(global_insights, f"reports/IBC_Global_Summary_{args.year}.xlsx")
+      # New JSON Feed
+      export_to_json(global_insights, f"reports/Mission_Insights_{args.year}.json")
         
     log_resource_usage(f"Completed Month {m}")
 

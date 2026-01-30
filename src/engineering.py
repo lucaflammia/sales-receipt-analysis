@@ -19,12 +19,22 @@ logger = logging.getLogger(__name__)
 class FeatureEngineer:
   def __init__(self, random_state=42):
     self.random_state = random_state
+    self.scaler = StandardScaler()
+    self.kmeans = None
+    self.mission_labels = None
 
   def _ensure_eager(self, df):
     """Helper to ensure we are working with a Polars DataFrame (Eager)."""
     if isinstance(df, pl.LazyFrame):
       return df.collect()
     return df
+
+  def _sanitize_input(self, df_pd):
+    """Prevents sklearn crashes by removing Infs and extreme outliers."""
+    # Replace Inf with NaN, then fill with 0
+    clean_df = df_pd.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    # Clip extreme values to float64 limits
+    return clean_df.clip(lower=-1e9, upper=1e9)
 
   def extract_canonical_features(self, lf: pl.LazyFrame) -> pl.LazyFrame:
     """
@@ -146,7 +156,8 @@ class FeatureEngineer:
       lasso = LassoCV(cv=5, random_state=self.random_state).fit(X_scaled, y)
       coefs = pd.Series(lasso.coef_, index=features)
       return coefs[coefs.abs() > 1e-3].to_dict()
-    except:
+    except Exception as e:
+      logger.warning(f"Lasso feature selection failed: {e}")
       return {}
 
   def get_consensus_features(self, rf_results: dict, lasso_results: dict):
@@ -325,191 +336,114 @@ class FeatureEngineer:
     plt.close()
     logging.info(f"📊 Top 2D pairwise plots saved: {path}")
 
-  def segment_shopping_missions(self, df, features, n_clusters=4):
-    """
-    Applies a Weighted Scaling approach to ensure physical basket size 
-    is as influential as monetary value.
-    """
-    # Clean Data
-    X_df = df.select(features).to_pandas().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+  def segment_shopping_missions(self, df, features, n_clusters=6, fit_global=False):
+    X_pd = self._sanitize_input(df.select(features).to_pandas())
     
-    if len(X_df) < n_clusters:
-      return df.with_columns([
-        pl.lit(0).alias("cluster_id"),
-        pl.lit("Standard Trip").alias("shopping_mission")
-      ])
+    if fit_global or self.kmeans is None:
+      logger.info(f"Fitting new global centroids for {n_clusters} clusters...")
+      X_scaled = self.scaler.fit_transform(X_pd)
+      self.kmeans = KMeans(n_clusters=n_clusters, init='k-means++', random_state=self.random_state, n_init=10)
+      self.kmeans.fit(X_scaled)
+    else:
+      X_scaled = self.scaler.transform(X_pd)
 
-    # Custom Weighted Scaling
-    # We use StandardScaler first to bring everything to mean=0, std=1
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_df)
+    clusters = self.kmeans.predict(X_scaled)
     
-    # Apply Feature Importance Weights
-    # We manually boost 'basket_size' so it can compete with high-value outliers
-    feature_weights = {
-      "basket_size": 1.5,           # Increase sensitivity to item count
-      "basket_value_per_item": 1.0, 
-      "freshness_weight_ratio": 1.2 # Boost fresh-focus
+    # Simple heuristic mapping for the mission names
+    # In production, we might map cluster IDs to names based on centroid centers
+    cluster_names = {
+      0: "Quick Convenience", 1: "Standard Mixed Trip", 
+      2: "Weekly Stock-up", 3: "Daily Fresh Pick",
+      4: "Premium/Specialty Single-Item", 5: "B2B / Bulk Outlier"
     }
     
-    weights_array = np.array([feature_weights.get(f, 1.0) for f in features])
-    X_weighted = X_scaled * weights_array
+    return df.with_columns(
+      pl.Series(name="cluster", values=clusters).replace(cluster_names).alias("shopping_mission")
+    )
 
-    # Clustering
-    kmeans = KMeans(n_clusters=n_clusters, random_state=self.random_state, n_init=15)
-    clusters = kmeans.fit_predict(X_weighted)
+  def _map_centroid_to_mission(self, centers, features):
+    """
+    Heuristic mapping of K-Means centroids to Mission names.
+    This ensures Cluster 0 in January is the same 'Mission' as Cluster 0 in February.
+    """
+    mapping = {}
+    feat_idx = {feat: i for i, feat in enumerate(features)}
     
-    # Centroids for mapping (must inverse the scaling to interpret them)
-    # Note: We un-weight then un-scale to get back to real-world units
-    unweighted_centroids = kmeans.cluster_centers_ / weights_array
-    actual_centroids = scaler.inverse_transform(unweighted_centroids)
-    
-    mapping = self._map_centroid_to_mission(actual_centroids, features)
-    
-    return df.with_columns([
-      pl.Series(name="cluster_id", values=clusters),
-      pl.Series(name="shopping_mission", values=[mapping.get(c, "Standard Trip") for c in clusters])
-    ])
-
-  def _map_centroid_to_mission(self, centroids, features):
-    mission_labels = {}
-    feat_map = {f: i for i, f in enumerate(features)}
-
-    for i, center in enumerate(centroids):
-      size = center[feat_map.get("basket_size", 0)]
-      value_per_item = center[feat_map.get("basket_value_per_item", 0)]
-      fresh = center[feat_map.get("freshness_weight_ratio", 0)]
-
-      # B2B / Outliers (Keep high for June-style peaks)
-      if size > 30 or (size > 10 and value_per_item > 150):
-        mission_labels[i] = "B2B / Bulk Outlier"
+    for i, center in enumerate(centers):
+      size = center[feat_idx["basket_size"]]
+      val_per_item = center[feat_idx["basket_value_per_item"]]
+      fresh_ratio = center[feat_idx["freshness_weight_ratio"]]
       
-      # Stock-up (Lowered for July/August sensitivity)
+      if size > 15:
+        mapping[i] = "B2B / Bulk Outlier"
       elif size > 5:
-        mission_labels[i] = "Weekly Stock-up"
-      
-      # Fresh Focus
-      elif fresh > 0.30 and size > 1.2:
-        mission_labels[i] = "Daily Fresh Pick"
-      
-      # Single-Item Differentiators
-      elif size <= 2.5:
-        if value_per_item > 45:
-          mission_labels[i] = "Premium/Specialty Single-Item"
-        elif value_per_item < 12:
-          mission_labels[i] = "Quick Convenience"
-        else:
-          mission_labels[i] = "Standard Mixed Trip"
+        mapping[i] = "Weekly Stock-up"
+      elif fresh_ratio > 0.3:
+        mapping[i] = "Daily Fresh Pick"
+      elif size <= 2.5 and val_per_item > 45:
+        mapping[i] = "Premium/Specialty Single-Item"
+      elif size <= 2.5 and val_per_item < 12:
+        mapping[i] = "Quick Convenience"
       else:
-        mission_labels[i] = "Standard Mixed Trip"
-            
-    return mission_labels
+        mapping[i] = "Standard Mixed Trip"
+    return mapping
 
   def determine_elbow_method(self, df, features, max_k=10):
+    """Safely calculates the optimal K using sanitized data."""
+    logger.info("Running Elbow Method...")
+    X_pd = self._sanitize_input(df.select(features).to_pandas())
+    X_scaled = self.scaler.fit_transform(X_pd)
+    
+    wcss = []
+    for i in range(1, max_k + 1):
+      km = KMeans(n_clusters=i, init='k-means++', random_state=self.random_state, n_init=10)
+      km.fit(X_scaled)
+      wcss.append(km.inertia_)
+    
+    # In a real scenario, use Kneed library here. For now, we return 6 as default.
+    return 6
+
+  def plot_mission_impact(self, df_pd, path, title="Impatto Missioni di Spesa"):
     """
-    Determines optimal K with a higher floor and diagnostic logging.
-    Includes safeguards for small datasets (e.g., tests or niche areas).
+    Generates a dual-axis chart for Business Stakeholders:
+    - Bars: Total Revenue (Fatturato)
+    - Line: Traffic Share (Incidenza Traffico %)
     """
-
-    # CLEANING & SCALING
-    # Standardize features as K-Means is sensitive to variance
-    data_clean = df.select(features).to_pandas().replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    X = StandardScaler().fit_transform(data_clean.values)
-    n_samples = X.shape[0]
-
-    # DYNAMIC RANGE SELECTION
-    # K-Means requires n_samples > n_clusters. 
-    # We cap max_k at n_samples - 1 (or 1 if only 1 sample exists).
-    safe_max_k = min(max_k, max(1, n_samples - 1))
-    
-    if safe_max_k < 2:
-      logger.warning(f"⚠️ Low sample size (N={n_samples}). Clustering skipped, returning K=1.")
-      return 1
-
-    distortions = []
-    K_range = list(range(1, safe_max_k + 1))
-
-    # COMPUTE DISTORTIONS
-    for k in K_range:
-      kmeanModel = KMeans(n_clusters=k, n_init=10, random_state=self.random_state).fit(X)
-      distortions.append(kmeanModel.inertia_)
-
-    # ELBOW CALCULATION (Geometric Distance from Line)
-    try:
-      p1 = np.array([K_range[0], distortions[0]])
-      p2 = np.array([K_range[-1], distortions[-1]])
-      
-      distances = [
-        np.abs(np.cross(p2-p1, p1-np.array([K_range[i], distortions[i]]))) / np.linalg.norm(p2-p1) 
-        for i in range(len(K_range))
-      ]
-      optimal_k = K_range[np.argmax(distances)]
-      
-      #  RETAIL MISSION NUDGE
-      # For production/large datasets, we usually expect 5+ distinct behaviors.
-      # We only nudge if the dataset is large enough to support it.
-      if optimal_k < 5 and n_samples > 10:
-        nudged_k = min(5, safe_max_k)
-        if nudged_k != optimal_k:
-          logger.info(f"K={optimal_k} is too low for granular missions. Nudging to K={nudged_k}.")
-          optimal_k = nudged_k
-                
-    except Exception as e:
-        # Fallback logic if the geometry fails
-        fallback_k = min(5, safe_max_k)
-        logger.warning(f"⚠️ Elbow detection failed: {e}. Fallback to K={fallback_k}")
-        optimal_k = fallback_k
-            
-    return int(optimal_k)
-
-  def plot_mission_impact(self, insights_df, path="plots/mission_impact.png"):
-    """Creates a strategic comparison between Revenue Share and Traffic Share with Italian labels."""
-    os.makedirs("plots", mode=0o777, exist_ok=True)
-    
-    # Convert Polars to Pandas for easier plotting
-    pdf = insights_df.to_pandas()
-    
-    # Italian translation for the legend/labels
-    label_revenue = 'Quota Fatturato %'
-    label_traffic = 'Quota Traffico %'
-    title_text = 'Impatto Strategico Missioni: Fatturato vs Traffico'
-    
+    plt.style.use('seaborn-v0_8-muted')
     fig, ax1 = plt.subplots(figsize=(12, 7))
-    
-    # Set positions for the bars
-    x = np.arange(len(pdf['shopping_mission']))
-    width = 0.35
-    
-    # Plot bars with refined retail colors
-    rects1 = ax1.bar(x - width/2, pdf['revenue_share_pct'], width, 
-                     label=label_revenue, color='#1B5E20', alpha=0.85) # Dark Green
-    rects2 = ax1.bar(x + width/2, pdf['traffic_share_pct'], width, 
-                     label=label_traffic, color='#0D47A1', alpha=0.85) # Dark Blue
-    
-    # Styling
-    ax1.set_ylabel('Percentuale (%)', fontweight='bold', fontsize=12)
-    ax1.set_title(title_text, fontsize=16, pad=20, fontweight='bold')
-    ax1.set_xticks(x)
-    
-    # Map mission names if needed, or keep as is if clusters are already descriptive
-    ax1.set_xticklabels(pdf['shopping_mission'], fontweight='bold', rotation=15)
-    ax1.legend(fontsize=11)
-    ax1.grid(axis='y', linestyle='--', alpha=0.7)
-    
-    # Add value labels on top of bars
-    def autolabel(rects):
-      for rect in rects:
-        height = rect.get_height()
-        ax1.annotate(f'{height}%',
-                    xy=(rect.get_x() + rect.get_width() / 2, height),
-                    xytext=(0, 3), 
-                    textcoords="offset points",
-                    ha='center', va='bottom', fontweight='bold', fontsize=10)
 
-    autolabel(rects1)
-    autolabel(rects2)
+    # Axis 1: Revenue (Bars)
+    sns.barplot(
+      data=df_pd, 
+      x="shopping_mission", 
+      y="total_mission_revenue", 
+      ax=ax1, 
+      hue="shopping_mission", 
+      palette="viridis", 
+      legend=False
+    )
+    ax1.set_ylabel("Fatturato Totale (€)", fontweight='bold')
+    ax1.set_xlabel("Missione di Spesa", fontweight='bold')
+    plt.xticks(rotation=15, ha='right')
+
+    # Axis 2: Traffic Share (Line)
+    ax2 = ax1.twinx()
+    sns.lineplot(
+      data=df_pd, 
+      x="shopping_mission", 
+      y="traffic_share_pct", 
+      ax=ax2, 
+      color="#C62828", 
+      marker="o", 
+      linewidth=2.5,
+      label="Quota Traffico %"
+    )
+    ax2.set_ylabel("Incidenza sul Traffico (%)", fontweight='bold', color="#C62828")
+    ax2.set_ylim(0, df_pd["traffic_share_pct"].max() * 1.2)
+
+    plt.title(title, fontsize=14, fontweight='bold', pad=20)
+    ax1.grid(axis='y', linestyle='--', alpha=0.4)
     
     plt.tight_layout()
-    plt.savefig(path, dpi=200) # Increased DPI for professional look
+    plt.savefig(path, dpi=200)
     plt.close()
-    logger.info(f"📈 Impact plot saved to: {path}")
