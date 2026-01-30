@@ -45,13 +45,11 @@ def find_partition_path(area_root, year, month):
 def export_to_json(monthly_data_list, export_path):
   """
   Generates a JSON feed for LLM consumption.
-  Uses Italian names for missions as per project guidelines.
   """
   json_output = {
     "metadata": {
       "project": "Missione Spesa",
       "analysis_date": time.strftime("%Y-%m-%d"),
-      "version": "2.2-Sanitized"
     },
     "monthly_insights": []
   }
@@ -96,6 +94,8 @@ def generate_global_summary(monthly_data_list, export_path):
     title_fmt = workbook.add_format({'bold': True, 'font_size': 14, 'font_color': '#1A237E'})
     bold_fmt = workbook.add_format({'bold': True, 'bg_color': '#F2F2F2', 'top': 1})
     audit_header_fmt = workbook.add_format({'italic': True, 'font_color': '#7F7F7F'})
+    # Define a numeric percentage format
+    pct_fmt = workbook.add_format({'num_format': '0.00%'})
 
     # --- TAB: GLOSSARIO E LEGENDA ---
     glossary_df = pd.DataFrame({
@@ -160,6 +160,9 @@ def generate_global_summary(monthly_data_list, export_path):
       # Map for monthly sheet
       m_exp = df_pd.copy()
       m_exp["shopping_mission"] = m_exp["shopping_mission"].replace(MISSION_MAP)
+      # Convert shares to decimals (Excel expects 0.05 for 5%)
+      m_exp["revenue_share_pct"] = m_exp["revenue_share_pct"] / 100
+      m_exp["traffic_share_pct"] = m_exp["traffic_share_pct"] / 100
       m_exp.rename(columns={
         "shopping_mission": "Missione_di_Spesa",
         "receipt_count": "Numero_Scontrini",
@@ -183,6 +186,8 @@ def generate_global_summary(monthly_data_list, export_path):
       an_df[cols_to_keep].to_excel(writer, sheet_name="Audit_Anomalie", index=False, startrow=2)
       audit_sheet = writer.sheets["Audit_Anomalie"]
       audit_desc = "LOGICA B2B: Pezzi > 30 o (Pezzi > 10 e Valore/Articolo > 150€)."
+      # Column indices for Quota_Fatturato_Perc and Quota_Traffico_Perc
+      audit_sheet.set_column('G:H', 15, pct_fmt)
       audit_sheet.write('A1', audit_desc, audit_header_fmt)
 
     # --- TAB: EXECUTIVE SUMMARY ---
@@ -213,6 +218,8 @@ def generate_global_summary(monthly_data_list, export_path):
     sheet_name = "Executive_Summary"
     sorted_summary.to_excel(writer, sheet_name=sheet_name, index=False, startrow=2)
     summary_sheet = writer.sheets[sheet_name]
+    # Column indices for Quota_Fatturato_Perc and Quota_Traffico_Perc
+    summary_sheet.set_column('G:H', 15, pct_fmt)
     summary_sheet.write('A1', f"ANALISI GLOBALE: {periods[0]} - {periods[-1]}", title_fmt)
 
     # Footer Totals
@@ -372,6 +379,8 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
 
     # Generate Strategic Dashboard Insights
     grand_total_revenue = df["basket_value"].sum()
+    total_receipts = df.height
+
     insights = (
       df.group_by("shopping_mission")
       .agg([
@@ -381,23 +390,14 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
         pl.col("basket_size").mean().round(2).alias("avg_items_per_trip")
       ])
       .with_columns([
-        ((pl.col("total_mission_revenue") / grand_total_revenue) * 100).round(1).alias("revenue_share_pct"),
-        ((pl.col("receipt_count") / df.height) * 100).round(1).alias("traffic_share_pct")
+        ((pl.col("total_mission_revenue") / grand_total_revenue) * 100).round(3).alias("revenue_share_pct"),
+        ((pl.col("receipt_count") / total_receipts) * 100).round(3).alias("traffic_share_pct")
       ])
       .sort("revenue_share_pct", descending=True)
     )
 
     plot_insights = insights.clone().to_pandas()
-    # Using the mission_map defined in your global summary logic
-    mission_map = {
-      "Standard Mixed Trip": "Spesa Standard Mista",
-      "Premium/Specialty Single-Item": "Premium / Specialità Singolo Articolo",
-      "B2B / Bulk Outlier": "B2B / Ingrosso Outlier",
-      "Weekly Stock-up": "Spesa Settimanale di Scorta",
-      "Quick Convenience": "Convenienza Rapida",
-      "Daily Fresh Pick": "Fresco Quotidiano"
-    }
-    plot_insights["shopping_mission"] = plot_insights["shopping_mission"].replace(mission_map)
+    plot_insights["shopping_mission"] = plot_insights["shopping_mission"].replace(MISSION_MAP)
 
     # Visualization - Ensure the path and labels are ready
     os.makedirs("plots", exist_ok=True)
