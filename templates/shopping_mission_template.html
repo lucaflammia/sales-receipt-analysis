@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Report – Missione Spesa (Analisi 2026-01-30)</title>
+  <style>
+    :root{
+      --bg:#0b1020;
+      --panel:#101a33;
+      --panel2:#0f1730;
+      --text:#e8ecff;
+      --muted:#a8b3e6;
+      --line:rgba(255,255,255,.10);
+      --good:#26d07c;
+      --warn:#ffcc66;
+      --bad:#ff5c77;
+
+      --c1:#7aa2ff; /* Standard */
+      --c2:#ffd166; /* Settimanale */
+      --c3:#2dd4bf; /* Convenienza */
+      --c4:#f97316; /* B2B */
+      --c5:#a78bfa; /* Fresco */
+      --c6:#fb7185; /* Premium */
+    }
+
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+      background: radial-gradient(1200px 700px at 10% 0%, rgba(122,162,255,.25), transparent 55%),
+                  radial-gradient(900px 600px at 90% 20%, rgba(45,212,191,.18), transparent 50%),
+                  var(--bg);
+      color:var(--text);
+    }
+
+    .wrap{max-width:1200px;margin:0 auto;padding:28px 18px 60px}
+    .top{
+      display:flex; gap:14px; align-items:flex-end; justify-content:space-between; flex-wrap:wrap;
+      padding:18px 18px 14px; border:1px solid var(--line); background:rgba(16,26,51,.55);
+      border-radius:18px; backdrop-filter: blur(10px);
+    }
+    .title h1{margin:0;font-size:24px;letter-spacing:.2px}
+    .title p{margin:6px 0 0;color:var(--muted)}
+    .badge{
+      border:1px solid var(--line); padding:8px 12px; border-radius:999px; background:rgba(255,255,255,.04);
+      color:var(--muted); font-size:13px
+    }
+
+    .grid{
+      margin-top:16px;
+      display:grid; gap:14px;
+      grid-template-columns: repeat(12, 1fr);
+    }
+
+    .card{
+      grid-column: span 12;
+      border:1px solid var(--line);
+      background:linear-gradient(180deg, rgba(16,26,51,.72), rgba(15,23,48,.72));
+      border-radius:18px;
+      padding:16px 16px 14px;
+      box-shadow: 0 14px 40px rgba(0,0,0,.25);
+    }
+    .card h2{margin:0 0 10px;font-size:16px;color:#f2f5ff}
+    .card .sub{margin:-6px 0 10px;color:var(--muted);font-size:13px}
+
+    .kpis{display:grid; gap:12px; grid-template-columns: repeat(12, 1fr)}
+    .kpi{
+      grid-column: span 12;
+      border:1px solid var(--line); border-radius:16px; padding:12px 12px 10px;
+      background:rgba(255,255,255,.035);
+    }
+    .kpi .lbl{color:var(--muted);font-size:12px}
+    .kpi .val{font-size:22px;margin-top:2px}
+    .kpi .delta{font-size:12px;margin-top:6px;color:var(--muted)}
+    .delta .up{color:var(--good)}
+    .delta .down{color:var(--bad)}
+    .delta .flat{color:var(--warn)}
+
+    @media(min-width: 860px){
+      .kpi{grid-column: span 4;}
+      .left6{grid-column: span 6}
+      .right6{grid-column: span 6}
+      .span7{grid-column: span 7}
+      .span5{grid-column: span 5}
+    }
+
+    .row{display:flex; gap:12px; flex-wrap:wrap}
+    canvas{width:100%; height:260px; display:block; background:rgba(0,0,0,.12); border-radius:14px; border:1px solid var(--line)}
+    .legend{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px}
+    .chip{display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:999px; border:1px solid var(--line); background:rgba(255,255,255,.03); color:var(--muted); font-size:12px}
+    .dot{width:10px;height:10px;border-radius:999px}
+
+    table{width:100%; border-collapse:separate; border-spacing:0; overflow:hidden; border-radius:14px; border:1px solid var(--line)}
+    thead th{
+      text-align:left; font-size:12px; letter-spacing:.2px; color:var(--muted);
+      padding:10px 10px; background:rgba(255,255,255,.03); border-bottom:1px solid var(--line)
+    }
+    tbody td{
+      padding:10px 10px; border-bottom:1px solid rgba(255,255,255,.06); font-size:13px
+    }
+    tbody tr:last-child td{border-bottom:none}
+    .num{text-align:right; font-variant-numeric: tabular-nums}
+    .muted{color:var(--muted)}
+    .pill{
+      display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; font-size:12px;
+      border:1px solid var(--line); background:rgba(255,255,255,.03); color:var(--muted)
+    }
+
+    .insights{display:grid; gap:10px}
+    .insight{
+      border:1px solid var(--line); border-radius:14px; padding:12px; background:rgba(255,255,255,.03)
+    }
+    .insight b{color:#f2f5ff}
+    .insight small{display:block; margin-top:6px; color:var(--muted); line-height:1.35}
+    .footer{margin-top:16px;color:var(--muted);font-size:12px}
+    .hr{height:1px;background:var(--line);margin:12px 0}
+    a{color:#bcd0ff}
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="title">
+        <h1>Missione Spesa – Report Insights</h1>
+        <p>Periodo analizzato: <b>Giugno–Agosto 2024</b> · Dataset: “monthly_insights”</p>
+      </div>
+      <div class="badge">Data analisi: <b>2026-01-30</b></div>
+    </div>
+
+    <div class="grid">
+      <!-- KPI -->
+      <div class="card">
+        <h2>Executive summary (3 mesi)</h2>
+        <div class="sub">Sintesi dei volumi e delle dinamiche principali.</div>
+
+        <div class="kpis">
+          <div class="kpi">
+            <div class="lbl">Scontrini totali</div>
+            <div class="val" id="kpiReceipts">–</div>
+            <div class="delta" id="kpiReceiptsDelta">–</div>
+          </div>
+          <div class="kpi">
+            <div class="lbl">Fatturato totale</div>
+            <div class="val" id="kpiRevenue">–</div>
+            <div class="delta" id="kpiRevenueDelta">–</div>
+          </div>
+          <div class="kpi">
+            <div class="lbl">Scontrino medio complessivo</div>
+            <div class="val" id="kpiATV">–</div>
+            <div class="delta" id="kpiATVDelta">–</div>
+          </div>
+        </div>
+
+        <div class="hr"></div>
+
+        <div class="insights" id="autoInsights">
+          <!-- JS inject -->
+        </div>
+
+        <div class="footer">
+          Nota: “B2B / Ingrosso Outlier” e altre missioni ad altissimo valore hanno impatto forte sul fatturato ma traffico minimo (quote traffico ~0%).
+        </div>
+      </div>
+
+      <!-- Trend charts -->
+      <div class="card left6">
+        <h2>Trend mensile – Fatturato</h2>
+        <div class="sub">Evidenzia il salto Giugno → Luglio e la discesa Luglio → Agosto.</div>
+        <canvas id="revChart" width="900" height="320"></canvas>
+        <div class="legend">
+          <span class="chip"><span class="dot" style="background:var(--c1)"></span>Fatturato (totale)</span>
+        </div>
+      </div>
+
+      <div class="card right6">
+        <h2>Trend mensile – Scontrini</h2>
+        <div class="sub">Andamento del traffico totale (scontrini).</div>
+        <canvas id="rcptChart" width="900" height="320"></canvas>
+        <div class="legend">
+          <span class="chip"><span class="dot" style="background:var(--c3)"></span>Scontrini (totale)</span>
+        </div>
+      </div>
+
+      <!-- Mix -->
+      <div class="card span7">
+        <h2>Mix missioni – quote fatturato</h2>
+        <div class="sub">Distribuzione percentuale per mese (dati “revenue_share_pct”).</div>
+        <canvas id="shareChart" width="900" height="320"></canvas>
+
+        <div class="legend">
+          <span class="chip"><span class="dot" style="background:var(--c1)"></span>Standard</span>
+          <span class="chip"><span class="dot" style="background:var(--c2)"></span>Settimanale</span>
+          <span class="chip"><span class="dot" style="background:var(--c3)"></span>Convenienza</span>
+          <span class="chip"><span class="dot" style="background:var(--c4)"></span>B2B</span>
+          <span class="chip"><span class="dot" style="background:var(--c5)"></span>Fresco</span>
+          <span class="chip"><span class="dot" style="background:var(--c6)"></span>Premium</span>
+        </div>
+      </div>
+
+      <div class="card span5">
+        <h2>Cosa sta succedendo (lettura rapida)</h2>
+        <div class="sub">Interpretazione operativa in 5 punti.</div>
+
+        <div class="insights" id="bullets">
+          <!-- JS inject -->
+        </div>
+
+        <div class="hr"></div>
+        <div class="pill">Suggerimento: separa il monitoraggio “core retail” dagli “outlier high-value” per non distorcere KPI e forecast.</div>
+      </div>
+
+      <!-- Tables -->
+      <div class="card">
+        <h2>Dettaglio mensile – totali</h2>
+        <div class="sub">Totale scontrini, fatturato e scontrino medio complessivo (calcolati come fatturato/scontrini).</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Mese</th>
+              <th class="num">Scontrini</th>
+              <th class="num">Fatturato</th>
+              <th class="num">Scontrino medio</th>
+              <th class="num">Δ scontrini MoM</th>
+              <th class="num">Δ fatturato MoM</th>
+            </tr>
+          </thead>
+          <tbody id="monthlyTotalsBody"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>Top missioni (complessivo 3 mesi)</h2>
+        <div class="sub">Ordinate per fatturato complessivo; include scontrino medio missione (fatturato/scontrini).</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Missione</th>
+              <th class="num">Scontrini</th>
+              <th class="num">Fatturato</th>
+              <th class="num">Scontrino medio</th>
+              <th class="num">Peso fatturato (stima)</th>
+            </tr>
+          </thead>
+          <tbody id="overallMissionBody"></tbody>
+        </table>
+        <div class="footer">Il “peso fatturato” qui è calcolato sul totale 3 mesi (non sulle “share” mensili, che sono già normalizzate mese per mese).</div>
+      </div>
+
+      <div class="card">
+        <h2>Mix per mese – dettaglio missioni</h2>
+        <div class="sub">Scontrini, fatturato, ATV e quote (revenue/traffic share) come da input.</div>
+        <div id="perMonthTables"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // =========================
+    // DATA (incollato dal JSON)
+    // =========================
+    /* VS Code might complain about the line below in the TEMPLATE, 
+      but Python will turn it into a valid object during the export. 
+    */
+    const data = {{DATA_PLACEHOLDER}};
+    // Ensure the rest of your code handles the data
+    console.log("Dati caricati:", data);
+    // ===========
+    // Helpers
+    // ===========
+    const eur = (n) => new Intl.NumberFormat("it-IT",{style:"currency",currency:"EUR",maximumFractionDigits:2}).format(n);
+    const intFmt = (n) => new Intl.NumberFormat("it-IT",{maximumFractionDigits:0}).format(n);
+    const pct1 = (n) => (n===null || Number.isNaN(n)) ? "–" : `${(n>=0?"+":"")}${n.toFixed(1)}%`;
+    const monthLabel = (p) => {
+      const [y,m] = p.split("-").map(Number);
+      const names = ["Gen","Feb","Mar","Apr","Mag","Giu","Lug","Ago","Set","Ott","Nov","Dic"];
+      return `${names[m-1]} ${y}`;
+    };
+    const sum = (arr) => arr.reduce((a,b)=>a+b,0);
+
+    function flatRows(){
+      const rows=[];
+      data.monthly_insights.forEach(m=>{
+        m.results.forEach(r=> rows.push({period:m.period, ...r}));
+      });
+      return rows;
+    }
+
+    // =========================
+    // Compute aggregates
+    // =========================
+    const rows = flatRows();
+    const periods = data.monthly_insights.map(x=>x.period);
+
+    const monthlyTotals = periods.map(p=>{
+      const r = rows.filter(x=>x.period===p);
+      const receipts = sum(r.map(x=>x.receipt_count));
+      const revenue = sum(r.map(x=>x.total_mission_revenue));
+      return { period:p, receipts, revenue, atv: revenue/receipts };
+    });
+
+    // MoM deltas
+    monthlyTotals.forEach((m,i)=>{
+      if(i===0){ m.momReceipts=null; m.momRevenue=null; }
+      else{
+        const prev = monthlyTotals[i-1];
+        m.momReceipts = (m.receipts/prev.receipts - 1)*100;
+        m.momRevenue = (m.revenue/prev.revenue - 1)*100;
+      }
+    });
+
+    // Overall by mission
+    const missions = [...new Set(rows.map(r=>r.shopping_mission))];
+    const overall = missions.map(name=>{
+      const r = rows.filter(x=>x.shopping_mission===name);
+      const receipts = sum(r.map(x=>x.receipt_count));
+      const revenue = sum(r.map(x=>x.total_mission_revenue));
+      return { name, receipts, revenue, atv: revenue/receipts };
+    }).sort((a,b)=>b.revenue-a.revenue);
+
+    const totalReceiptsAll = sum(monthlyTotals.map(x=>x.receipts));
+    const totalRevenueAll = sum(monthlyTotals.map(x=>x.revenue));
+    const atvAll = totalRevenueAll / totalReceiptsAll;
+
+    // “outlier/high-value” in June
+    const june = rows.filter(r=>r.period==="2024-06");
+    const juneTotal = sum(june.map(x=>x.total_mission_revenue));
+    const juneOutlierNames = new Set(["B2B / Ingrosso Outlier","Fresco Quotidiano","Premium / Specialità Singolo Articolo"]);
+    const juneOutliers = sum(june.filter(x=>juneOutlierNames.has(x.shopping_mission)).map(x=>x.total_mission_revenue));
+    const dropJunJul = (monthlyTotals[0].revenue - monthlyTotals[1].revenue);
+    const explained = dropJunJul>0 ? (juneOutliers/dropJunJul)*100 : 0;
+
+    // ===========
+    // KPI render
+    // ===========
+    document.getElementById("kpiReceipts").textContent = intFmt(totalReceiptsAll);
+    document.getElementById("kpiRevenue").textContent = eur(totalRevenueAll);
+    document.getElementById("kpiATV").textContent = eur(atvAll);
+
+    // Last MoM (Jul->Aug)
+    const last = monthlyTotals[monthlyTotals.length-1];
+    const kpiReceiptsDelta = `Ultimo MoM (${monthLabel(monthlyTotals[1].period)}→${monthLabel(last.period)}): ` +
+      `<span class="${last.momReceipts<0?'down':(last.momReceipts>0?'up':'flat')}">${pct1(last.momReceipts)}</span>`;
+    const kpiRevenueDelta = `Ultimo MoM (${monthLabel(monthlyTotals[1].period)}→${monthLabel(last.period)}): ` +
+      `<span class="${last.momRevenue<0?'down':(last.momRevenue>0?'up':'flat')}">${pct1(last.momRevenue)}</span>`;
+    const atvMom = (monthlyTotals[2].atv/monthlyTotals[1].atv - 1)*100;
+    const kpiATVDelta = `Ultimo MoM (${monthLabel(monthlyTotals[1].period)}→${monthLabel(last.period)}): ` +
+      `<span class="${atvMom<0?'down':(atvMom>0?'up':'flat')}">${pct1(atvMom)}</span>`;
+
+    document.getElementById("kpiReceiptsDelta").innerHTML = kpiReceiptsDelta;
+    document.getElementById("kpiRevenueDelta").innerHTML = kpiRevenueDelta;
+    document.getElementById("kpiATVDelta").innerHTML = kpiATVDelta;
+
+    // ===========
+    // Auto insights (top box)
+    // ===========
+    const auto = document.getElementById("autoInsights");
+    auto.innerHTML = `
+      <div class="insight">
+        <b>Fatturato in calo da Giugno a Luglio</b>
+        <small>
+          Giugno: <b>${eur(monthlyTotals[0].revenue)}</b> → Luglio: <b>${eur(monthlyTotals[1].revenue)}</b>
+          (${pct1((monthlyTotals[1].revenue/monthlyTotals[0].revenue-1)*100)}).<br/>
+          La riduzione è in buona parte legata alla scomparsa di missioni “high-value” presenti in Giugno
+          (B2B/Fresco/Premium): circa <b>${eur(juneOutliers)}</b>, pari a <b>${explained.toFixed(0)}%</b> del calo Giugno→Luglio.
+        </small>
+      </div>
+
+      <div class="insight">
+        <b>Il “core” (Standard + Settimanale + Convenienza) domina il traffico</b>
+        <small>
+          In tutti i mesi, queste missioni assorbono ~il totale del traffico (oltre il 99%).
+          La missione <b>Convenienza Rapida</b> da sola muove ~44% del traffico con ATV ~10€:
+          ottima per frequenza, meno per valore.
+        </small>
+      </div>
+
+      <div class="insight">
+        <b>Stabilità dello scontrino medio “core”, volatilità da outlier</b>
+        <small>
+          Lo scontrino medio complessivo passa da <b>${eur(monthlyTotals[0].atv)}</b> (Giugno) a ~<b>${eur(monthlyTotals[1].atv)}</b>/<b>${eur(monthlyTotals[2].atv)}</b> (Luglio/Agosto),
+          segno che gli outlier gonfiano il KPI in modo non strutturale.
+        </small>
+      </div>
+    `;
+
+    // ===========
+    // 5 bullets box
+    // ===========
+    const bullets = document.getElementById("bullets");
+    bullets.innerHTML = `
+      <div class="insight">
+        <b>1) Il traffico scende progressivamente</b>
+        <small>173.050 → 161.801 → 133.603 scontrini (Giugno→Agosto): attenzione a stagionalità o calo visite.</small>
+      </div>
+      <div class="insight">
+        <b>2) “Standard Mista” cresce in quota fatturato</b>
+        <small>Dal 36,6% (Giugno) a ~44% (Luglio/Agosto): il mix si sposta verso acquisti “normali”.</small>
+      </div>
+      <div class="insight">
+        <b>3) “Settimanale di Scorta” è il motore di valore</b>
+        <small>ATV ~76€ costante: piccole variazioni di traffico impattano molto il fatturato.</small>
+      </div>
+      <div class="insight">
+        <b>4) “Convenienza Rapida” è una leva di frequenza</b>
+        <small>~44% del traffico con ATV ~10€: utile per cross-sell/upsell e conversione a missioni più “ricche”.</small>
+      </div>
+      <div class="insight">
+        <b>5) Gestire gli outlier separatamente</b>
+        <small>Giugno include B2B/Fresco/Premium “high-value” con traffico ~0%: monitorali come canale a parte.</small>
+      </div>
+    `;
+
+    // ===========
+    // Tables
+    // ===========
+    const mtBody = document.getElementById("monthlyTotalsBody");
+    mtBody.innerHTML = monthlyTotals.map((m,i)=>`
+      <tr>
+        <td><b>${monthLabel(m.period)}</b> <span class="muted">(${m.period})</span></td>
+        <td class="num">${intFmt(m.receipts)}</td>
+        <td class="num">${eur(m.revenue)}</td>
+        <td class="num">${eur(m.atv)}</td>
+        <td class="num">${i===0 ? "–" : `<span class="${m.momReceipts<0?'bad':(m.momReceipts>0?'good':'muted')}">${pct1(m.momReceipts)}</span>`}</td>
+        <td class="num">${i===0 ? "–" : `<span class="${m.momRevenue<0?'bad':(m.momRevenue>0?'good':'muted')}">${pct1(m.momRevenue)}</span>`}</td>
+      </tr>
+    `).join("");
+
+    const omBody = document.getElementById("overallMissionBody");
+    omBody.innerHTML = overall.map(o=>{
+      const share = (o.revenue/totalRevenueAll)*100;
+      return `
+        <tr>
+          <td><b>${o.name}</b></td>
+          <td class="num">${intFmt(o.receipts)}</td>
+          <td class="num">${eur(o.revenue)}</td>
+          <td class="num">${eur(o.atv)}</td>
+          <td class="num">${share.toFixed(1)}%</td>
+        </tr>
+      `;
+    }).join("");
+
+    // Per-month mission tables
+    const perMonth = document.getElementById("perMonthTables");
+    perMonth.innerHTML = data.monthly_insights.map(m=>{
+      const rows = m.results.slice().sort((a,b)=>b.total_mission_revenue-a.total_mission_revenue);
+      return `
+        <div style="margin: 0 0 14px 0;">
+          <div class="pill" style="margin-bottom:10px;"><b>${monthLabel(m.period)}</b>&nbsp;<span class="muted">(${m.period})</span></div>
+          <table>
+            <thead>
+              <tr>
+                <th>Missione</th>
+                <th class="num">Scontrini</th>
+                <th class="num">Fatturato</th>
+                <th class="num">ATV</th>
+                <th class="num">Articoli/Trip</th>
+                <th class="num">Quota fatturato</th>
+                <th class="num">Quota traffico</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(r=>`
+                <tr>
+                  <td><b>${r.shopping_mission}</b></td>
+                  <td class="num">${intFmt(r.receipt_count)}</td>
+                  <td class="num">${eur(r.total_mission_revenue)}</td>
+                  <td class="num">${eur(r.avg_trip_value)}</td>
+                  <td class="num">${r.avg_items_per_trip.toFixed(2)}</td>
+                  <td class="num">${r.revenue_share_pct.toFixed(3)}%</td>
+                  <td class="num">${r.traffic_share_pct.toFixed(3)}%</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }).join("");
+
+    // ===========
+    // Simple canvas charts (no librerie esterne)
+    // ===========
+    function drawLineChart(canvas, labels, series, opts={}){
+      const ctx = canvas.getContext("2d");
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0,0,W,H);
+
+      const pad = {l:52,r:16,t:18,b:42};
+      const x0=pad.l, y0=pad.t, x1=W-pad.r, y1=H-pad.b;
+
+      // background grid
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = "rgba(255,255,255,0.08)";
+      ctx.lineWidth = 1;
+
+      const gridY = 5;
+      for(let i=0;i<=gridY;i++){
+        const y = y0 + (y1-y0)*(i/gridY);
+        ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
+      }
+
+      // scales
+      const all = series.data;
+      const min = 0;
+      const max = Math.max(...all)*1.10;
+
+      const xStep = (x1-x0)/(labels.length-1 || 1);
+      const yMap = v => y1 - (v-min)/(max-min || 1)*(y1-y0);
+
+      // axis labels
+      ctx.fillStyle = "rgba(232,236,255,0.9)";
+      ctx.font = "12px ui-sans-serif, system-ui";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+
+      for(let i=0;i<=gridY;i++){
+        const v = max*(1 - i/gridY);
+        const y = y0 + (y1-y0)*(i/gridY);
+        const txt = opts.formatY ? opts.formatY(v) : String(v.toFixed(0));
+        ctx.fillText(txt, x0-10, y);
+      }
+
+      // x labels
+      ctx.textAlign="center";
+      ctx.textBaseline="top";
+      labels.forEach((lb,i)=>{
+        const x = x0 + xStep*i;
+        ctx.fillStyle="rgba(168,179,230,0.95)";
+        ctx.fillText(lb, x, y1+10);
+      });
+
+      // line
+      ctx.strokeStyle = series.color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      series.data.forEach((v,i)=>{
+        const x = x0 + xStep*i;
+        const y = yMap(v);
+        if(i===0) ctx.moveTo(x,y);
+        else ctx.lineTo(x,y);
+      });
+      ctx.stroke();
+
+      // points
+      ctx.fillStyle = series.color;
+      series.data.forEach((v,i)=>{
+        const x = x0 + xStep*i;
+        const y = yMap(v);
+        ctx.beginPath(); ctx.arc(x,y,4,0,Math.PI*2); ctx.fill();
+      });
+
+      // title
+      if(opts.title){
+        ctx.fillStyle="rgba(232,236,255,0.92)";
+        ctx.textAlign="left"; ctx.textBaseline="top";
+        ctx.font="bold 13px ui-sans-serif, system-ui";
+        ctx.fillText(opts.title, x0, 6);
+      }
+    }
+
+    function drawStackedBars(canvas, labels, stacks, colors, opts={}){
+      const ctx = canvas.getContext("2d");
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0,0,W,H);
+
+      const pad = {l:52,r:16,t:18,b:42};
+      const x0=pad.l, y0=pad.t, x1=W-pad.r, y1=H-pad.b;
+
+      // grid
+      ctx.strokeStyle = "rgba(255,255,255,0.08)";
+      ctx.lineWidth = 1;
+      const gridY = 5;
+      for(let i=0;i<=gridY;i++){
+        const y = y0 + (y1-y0)*(i/gridY);
+        ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
+      }
+
+      // y labels (0..100%)
+      ctx.fillStyle = "rgba(232,236,255,0.9)";
+      ctx.font = "12px ui-sans-serif, system-ui";
+      ctx.textAlign="right"; ctx.textBaseline="middle";
+      for(let i=0;i<=gridY;i++){
+        const v = 100*(1 - i/gridY);
+        const y = y0 + (y1-y0)*(i/gridY);
+        ctx.fillText(`${v.toFixed(0)}%`, x0-10, y);
+      }
+
+      // x labels
+      ctx.textAlign="center"; ctx.textBaseline="top";
+      labels.forEach((lb,i)=>{
+        const x = x0 + (x1-x0)*( (i+0.5)/labels.length );
+        ctx.fillStyle="rgba(168,179,230,0.95)";
+        ctx.fillText(lb, x, y1+10);
+      });
+
+      const barW = (x1-x0)/labels.length * 0.62;
+      const gap = (x1-x0)/labels.length * 0.38;
+
+      const yMap = pct => y1 - (pct/100)*(y1-y0);
+
+      labels.forEach((lb,i)=>{
+        let acc = 0;
+        const xCenter = x0 + (x1-x0)*((i+0.5)/labels.length);
+        const xLeft = xCenter - barW/2;
+        stacks.forEach((key,si)=>{
+          const v = (opts.data[i] && opts.data[i][key]!==undefined) ? opts.data[i][key] : 0;
+          const yTop = yMap(acc+v);
+          const yBot = yMap(acc);
+          ctx.fillStyle = colors[key] || "rgba(255,255,255,0.2)";
+          ctx.fillRect(xLeft, yTop, barW, (yBot-yTop));
+          acc += v;
+        });
+
+        // outline
+        ctx.strokeStyle="rgba(255,255,255,0.10)";
+        ctx.strokeRect(xLeft, y0, barW, y1-y0);
+      });
+
+      if(opts.title){
+        ctx.fillStyle="rgba(232,236,255,0.92)";
+        ctx.textAlign="left"; ctx.textBaseline="top";
+        ctx.font="bold 13px ui-sans-serif, system-ui";
+        ctx.fillText(opts.title, x0, 6);
+      }
+    }
+
+    // Build share dataset (use revenue_share_pct, missing missions -> 0)
+    const missionKeyMap = {
+      "Spesa Standard Mista":"Standard",
+      "Spesa Settimanale di Scorta":"Settimanale",
+      "Convenienza Rapida":"Convenienza",
+      "B2B / Ingrosso Outlier":"B2B",
+      "Fresco Quotidiano":"Fresco",
+      "Premium / Specialità Singolo Articolo":"Premium"
+    };
+    const stackOrder = ["Standard","Settimanale","Convenienza","B2B","Fresco","Premium"];
+    const stackColors = {
+      "Standard": getComputedStyle(document.documentElement).getPropertyValue("--c1").trim(),
+      "Settimanale": getComputedStyle(document.documentElement).getPropertyValue("--c2").trim(),
+      "Convenienza": getComputedStyle(document.documentElement).getPropertyValue("--c3").trim(),
+      "B2B": getComputedStyle(document.documentElement).getPropertyValue("--c4").trim(),
+      "Fresco": getComputedStyle(document.documentElement).getPropertyValue("--c5").trim(),
+      "Premium": getComputedStyle(document.documentElement).getPropertyValue("--c6").trim()
+    };
+
+    const shareData = data.monthly_insights.map(m=>{
+      const obj = { period:m.period };
+      stackOrder.forEach(k=>obj[k]=0);
+      m.results.forEach(r=>{
+        const k = missionKeyMap[r.shopping_mission];
+        if(k) obj[k] = r.revenue_share_pct;
+      });
+      return obj;
+    });
+
+    // Draw charts
+    const labelShort = periods.map(monthLabel);
+
+    drawLineChart(
+      document.getElementById("revChart"),
+      labelShort,
+      { data: monthlyTotals.map(x=>x.revenue), color: stackColors.Standard },
+      { title: "Fatturato totale", formatY:(v)=>eur(v) }
+    );
+
+    drawLineChart(
+      document.getElementById("rcptChart"),
+      labelShort,
+      { data: monthlyTotals.map(x=>x.receipts), color: stackColors.Convenienza },
+      { title: "Scontrini totali", formatY:(v)=>intFmt(v) }
+    );
+
+    drawStackedBars(
+      document.getElementById("shareChart"),
+      labelShort,
+      stackOrder,
+      stackColors,
+      { title:"Quote fatturato per missione (somma=100%)", data: shareData }
+    );
+  </script>
+</body>
+</html>

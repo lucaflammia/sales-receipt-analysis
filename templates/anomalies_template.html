@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Report – Rilevamento Anomalie (Analisi 2026)</title>
+  <style>
+    :root{
+      --bg:#0b1020;
+      --panel:#101a33;
+      --text:#e8ecff;
+      --muted:#a8b3e6;
+      --line:rgba(255,255,255,.10);
+      --bad:#ff5c77;
+      --warn:#ffcc66;
+      --good:#26d07c;
+      --accent:#7aa2ff;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      background: radial-gradient(1000px 600px at 0% 0%, rgba(255,92,119,0.12), transparent 50%), var(--bg);
+      color:var(--text);
+      line-height:1.5;
+    }
+    .wrap{max-width:1200px;margin:0 auto;padding:30px 20px}
+    .header{
+      display:flex; justify-content:space-between; align-items:center; 
+      padding-bottom:20px; border-bottom:1px solid var(--line); margin-bottom:30px;
+    }
+    h1{margin:0; font-size:24px; color:#fff}
+    .tag-critical{background:rgba(255,92,119,0.2); color:var(--bad); padding:4px 12px; border-radius:999px; font-size:12px; font-weight:bold; border:1px solid var(--bad)}
+    
+    .grid{display:grid; grid-template-columns: 1fr 2fr; gap:20px}
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+    .card{
+      background:var(--panel); border:1px solid var(--line); border-radius:18px; padding:20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    }
+    .card h2{margin:0 0 15px; font-size:18px; display:flex; align-items:center; gap:10px}
+    
+    .table-container { overflow-x: auto; }
+    table{width:100%; border-collapse:collapse; margin-top:10px}
+    th{text-align:left; color:var(--muted); font-size:11px; text-transform:uppercase; padding:8px; border-bottom:1px solid var(--line)}
+    td{padding:10px 8px; border-bottom:1px solid rgba(255,255,255,0.05); font-size:13px}
+    .num{font-family:monospace; text-align:right}
+    .high-risk{color:var(--bad); font-weight:bold}
+    .period-header { background: rgba(122, 162, 255, 0.1); font-weight: bold; color: var(--accent); }
+    
+    .footer{margin-top:40px; font-size:12px; color:var(--muted); text-align:center}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <div>
+        <h1>Missione Spesa: Analisi Anomalie</h1>
+        <div style="color:var(--muted); font-size:14px" id="reportSubtitle">Rilevamento outlier statistici: Ortofrutta e Performance Operativa</div>
+      </div>
+      <div class="tag-critical">LIVELLO RISCHIO: MONITORAGGIO</div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>📊 Performance Casse</h2>
+        <p style="font-size:13px; color:var(--muted)">Integrità operativa e scostamenti nei tempi di scansione.</p>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>ID Cassa</th>
+                <th class="num">Scostamento</th>
+                <th class="num">Rischio</th>
+              </tr>
+            </thead>
+            <tbody id="cashierBody">
+              <tr><td colspan="3" style="text-align:center; color:var(--muted)">Nessun dato caricato</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>🍎 Audit Pesa Ortofrutta (Dettagliato)</h2>
+        <p style="font-size:13px; color:var(--muted)">Rilevamento discrepanze tra peso rilevato e codifica scontrino.</p>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Scontrino</th>
+                <th>Tipo</th>
+                <th>Barcode</th>
+                <th class="num">Negozio</th>
+              </tr>
+            </thead>
+            <tbody id="produceBody">
+              <tr><td colspan="5" style="text-align:center; color:var(--muted)">Nessuna anomalia rilevata nel periodo</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      Generato da Sistema Gemini Flash – 2026 • Log di sistema disponibili in formato English Raw
+    </div>
+  </div>
+
+  <script>
+    // Injection Point
+    const data = {{DATA_PLACEHOLDER}};
+    
+    function renderAnomalies() {
+      const cBody = document.getElementById('cashierBody');
+      const pBody = document.getElementById('produceBody');
+
+      // 1. Render Cashier Data
+      if(data.cashier_anomalies && data.cashier_anomalies.length > 0) {
+        cBody.innerHTML = data.cashier_anomalies.map(item => `
+          <tr>
+            <td><b>${item.id}</b></td>
+            <td class="num">${item.deviation > 0 ? '+' : ''}${item.deviation}%</td>
+            <td class="num ${item.risk > 70 ? 'high-risk' : ''}">${item.risk}/100</td>
+          </tr>
+        `).join('');
+      }
+
+      // 2. Render Produce Alerts (Iterating through periods)
+      let produceHTML = "";
+      const alerts = data.produce_alerts || data.alerts || []; // Support both full and filtered JSON
+
+      if (alerts.length > 0) {
+        alerts.forEach(periodEntry => {
+          // Add a header for the month
+          produceHTML += `<tr class="period-header"><td colspan="5">Periodo: ${periodEntry.period}</td></tr>`;
+          
+          if(periodEntry.details && periodEntry.details.length > 0) {
+            produceHTML += periodEntry.details.map(detail => `
+              <tr>
+                <td>${detail.date_str || '-'}</td>
+                <td style="font-family:monospace; font-size:11px">${detail.receipt_id.split('-').pop()}</td>
+                <td>${detail.scontrinoTipo}</td>
+                <td style="font-family:monospace">${detail.scontrinoBarcode}</td>
+                <td class="num">${detail.store_id}</td>
+              </tr>
+            `).join('');
+          } else {
+            produceHTML += `<tr><td colspan="5" style="text-align:center">Nessun dettaglio per questo periodo</td></tr>`;
+          }
+        });
+        pBody.innerHTML = produceHTML;
+      }
+    }
+
+    renderAnomalies();
+  </script>
+</body>
+</html>
