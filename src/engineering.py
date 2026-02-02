@@ -338,6 +338,68 @@ class FeatureEngineer:
     plt.close()
     logging.info(f"📊 Top 2D pairwise plots saved: {path}")
 
+  def detect_cashier_anomalies(self, df: pl.DataFrame):
+    """
+    SWEETHEARTING DETECTION
+    Algorithm: Isolation Forest per Cashier.
+    Flags cashiers with significantly lower average item prices than peers.
+    """
+    # Aggregate stats per cashier
+    cashier_stats = df.group_by("cashier_id").agg([
+      pl.col("basket_value_per_item").mean().alias("avg_item_value"),
+      pl.col("basket_value").mean().alias("avg_basket_total"),
+      pl.len().alias("transaction_count")
+    ]).to_pandas()
+
+    if len(cashier_stats) < 5:
+      return df
+
+    # Model cashier behavior
+    clf = IsolationForest(contamination=0.05, random_state=42)
+    cashier_stats["cashier_anomaly_score"] = clf.fit_predict(cashier_stats[["avg_item_value", "avg_basket_total"]])
+    
+    # Convert back to Polars and join
+    anomaly_map = pl.from_pandas(cashier_stats[["cashier_id", "cashier_anomaly_score"]])
+    return df.join(anomaly_map, on="cashier_id", how="left")
+
+  def detect_produce_weighing_errors(self, line_df: pl.DataFrame):
+    """
+    ORTOFRUTTA WEIGHT AUDIT
+    Algorithm: Z-Score on Price/Weight Ratio per SKU.
+    """
+    # Filter for weighted items (Produce)
+    produce_df = line_df.filter(pl.col("weight") > 0)
+    
+    # Calculate Ratio: Price / Weight
+    produce_df = produce_df.with_columns([
+      (pl.col("line_total") / pl.col("weight")).alias("price_weight_ratio")
+    ])
+
+    # Z-Score per Product ID
+    # Use fill_null(0.0) on std() to prevent division by zero resulting in NaN
+    produce_df = produce_df.with_columns([
+      ((pl.col("price_weight_ratio") - pl.col("price_weight_ratio").mean().over("product_id")) / 
+        pl.col("price_weight_ratio").std().over("product_id").fill_null(0.0)).alias("weight_z_score")
+    ])
+
+    # Handle Infinity and NaN explicitly using Polars native methods
+    produce_df = produce_df.with_columns([
+      pl.when(pl.col("weight_z_score").is_infinite() | pl.col("weight_z_score").is_nan())
+      .then(0.0)
+      .otherwise(pl.col("weight_z_score"))
+      .fill_null(0.0)
+      .alias("weight_z_score")
+    ])
+
+    # Flag anomalies where Z > 3 (99.7% confidence)
+    anomalies = produce_df.filter(pl.col("weight_z_score").abs() > 3)
+    
+    if not anomalies.is_empty():
+      # Log in English per instructions
+      logger.warning(f"🚩 Detected {len(anomalies)} potential weighing errors in Ortofrutta.")
+    
+    return anomalies
+  
   def segment_shopping_missions(self, df, features, n_clusters=6, fit_global=False):
     """
     Segments receipts into missions using a hybrid approach:
