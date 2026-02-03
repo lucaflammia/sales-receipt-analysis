@@ -132,7 +132,7 @@ class FeatureEngineer:
     rf = RandomForestRegressor(
       n_estimators=100, # Reduced for speed, keep 500 if latency isn't an issue
       random_state=self.random_state,
-      n_jobs=-1 
+      n_jobs=1 # Force single-threaded for reproducibility 
     )
     rf.fit(X, y)
     
@@ -221,12 +221,14 @@ class FeatureEngineer:
       .to_dict()
     )
 
-  def add_anomaly_score(self, df: pl.DataFrame | pl.LazyFrame, features: list, model_path: str = None):
+  def add_anomaly_score(self, df: pl.DataFrame | pl.LazyFrame, features: list):
     """Adds anomaly scores using Isolation Forest."""
     eager_df = self._ensure_eager(df)
+    # Force a deterministic sort before ML
+    eager_df = eager_df.sort("receipt_id")
     data_for_model = eager_df.select(features).to_pandas()
 
-    model = IsolationForest(random_state=self.random_state)
+    model = IsolationForest(random_state=self.random_state, n_jobs=1, contamination='auto')
     model.fit(data_for_model)
 
     scores = model.decision_function(data_for_model)
@@ -362,43 +364,44 @@ class FeatureEngineer:
     anomaly_map = pl.from_pandas(cashier_stats[["cashier_id", "cashier_anomaly_score"]])
     return df.join(anomaly_map, on="cashier_id", how="left")
 
-  def detect_produce_weighing_errors(self, line_df: pl.DataFrame):
+  def detect_produce_weighing_errors(self, df: pl.DataFrame):
     """
     ORTOFRUTTA WEIGHT AUDIT
-    Algorithm: Z-Score on Price/Weight Ratio per SKU.
+    Algorithm: Median Absolute Deviation (MAD)
+    Flags produce items with anomalous unit prices based on weight.
     """
-    # Filter for weighted items (Produce)
-    produce_df = line_df.filter(pl.col("weight") > 0)
-    
-    # Calculate Ratio: Price / Weight
+    logger.info("Executing High-Precision Produce Audit (MAD-based)...")
+
+    # Filter and deterministic sort
+    produce_df = df.filter((pl.col("weight") > 0) & (pl.col("line_total") > 0)).sort("receipt_id")
+
+    if produce_df.is_empty():
+      return pl.DataFrame()
+
+    # Calculate Median and MAD (Robust Statistics)
+    # MAD is the median of the absolute deviations from the data's median
     produce_df = produce_df.with_columns([
-      (pl.col("line_total") / pl.col("weight")).alias("price_weight_ratio")
+      (pl.col("line_total") / pl.col("weight")).alias("unit_price")
+    ]).with_columns([
+      pl.col("unit_price").median().over("product_id").alias("med_price"),
+    ]).with_columns([
+      (pl.col("unit_price") - pl.col("med_price")).abs().median().over("product_id").alias("mad_price")
     ])
 
-    # Z-Score per Product ID
-    # Use fill_null(0.0) on std() to prevent division by zero resulting in NaN
-    produce_df = produce_df.with_columns([
-      ((pl.col("price_weight_ratio") - pl.col("price_weight_ratio").mean().over("product_id")) / 
-        pl.col("price_weight_ratio").std().over("product_id").fill_null(0.0)).alias("weight_z_score")
-    ])
+    # Identify outliers using the Modified Z-Score
+    # We use 1.4826 as the consistency constant to make MAD comparable to Std Dev
+    anomalies = produce_df.filter(
+      (pl.col("mad_price") > 0) & 
+      (((pl.col("unit_price") - pl.col("med_price")).abs() / (pl.col("mad_price") * 1.4826)) > 6.0)
+    )
 
-    # Handle Infinity and NaN explicitly using Polars native methods
-    produce_df = produce_df.with_columns([
-      pl.when(pl.col("weight_z_score").is_infinite() | pl.col("weight_z_score").is_nan())
-      .then(0.0)
-      .otherwise(pl.col("weight_z_score"))
-      .fill_null(0.0)
-      .alias("weight_z_score")
+    return anomalies.select([
+      pl.col("date_str"),
+      pl.col("receipt_id"),
+      pl.col("product_id").alias("scontrinoBarcode"),
+      pl.lit("Peso/Prezzo Errante").alias("scontrinoTipo"),
+      pl.col("store_id")
     ])
-
-    # Flag anomalies where Z > 3 (99.7% confidence)
-    anomalies = produce_df.filter(pl.col("weight_z_score").abs() > 3)
-    
-    if not anomalies.is_empty():
-      # Log in English per instructions
-      logger.warning(f"🚩 Detected {len(anomalies)} potential weighing errors in Ortofrutta.")
-    
-    return anomalies
   
   def segment_shopping_missions(self, df, features, n_clusters=6, fit_global=False):
     """
@@ -440,7 +443,8 @@ class FeatureEngineer:
           n_clusters=k_target, 
           init='k-means++', 
           random_state=self.random_state, 
-          n_init=10
+          n_init=10,
+          algorithm="lloyd" # Ensures stable results
         )
         clusters = self.kmeans.fit_predict(X_scaled)
       else:
