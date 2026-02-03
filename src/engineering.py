@@ -478,17 +478,10 @@ class FeatureEngineer:
         clusters = self.kmeans.predict(X_scaled)
 
       # Map cluster IDs to consumer names
-      # Standard logic mapping based on project requirements
-      consumer_map = {
-        0: "Standard Mixed Trip",
-        1: "Quick Convenience",
-        2: "Weekly Stock-up",
-        3: "Daily Fresh Pick",
-        4: "Premium/Specialty Single-Item"
-      }
+      centroid_map = self._map_centroid_to_mission(self.kmeans.cluster_centers_, features)
       
       # Convert cluster IDs to names
-      mission_names = [consumer_map.get(c, "Standard Mixed Trip") for c in clusters]
+      mission_names = [centroid_map.get(c, "Standard Mixed Trip") for c in clusters]
       
       # Create a temporary mapping dataframe to avoid ShapeError
       # We use the unique receipt_id from the pending subset to align the names
