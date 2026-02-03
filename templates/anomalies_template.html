@@ -6,33 +6,32 @@
   <title>Report – Rilevamento Anomalie (Analisi 2026)</title>
   <style>
     :root{
-      --bg:#0b1020;
-      --panel:#101a33;
-      --text:#e8ecff;
-      --muted:#a8b3e6;
-      --line:rgba(255,255,255,.10);
-      --bad:#ff5c77;
-      --warn:#ffcc66;
-      --good:#26d07c;
-      --accent:#7aa2ff;
+      --bg:#0b1020; --panel:#101a33; --text:#e8ecff; --muted:#a8b3e6; --line:rgba(255,255,255,.10);
+      --bad:#ff5c77; --warn:#ffcc66; --good:#26d07c; --accent:#7aa2ff;
     }
     *{box-sizing:border-box}
     body{
-      margin:0;
-      font-family: ui-sans-serif, system-ui, sans-serif;
+      margin:0; font-family: ui-sans-serif, system-ui, sans-serif;
       background: radial-gradient(1000px 600px at 0% 0%, rgba(255,92,119,0.12), transparent 50%), var(--bg);
-      color:var(--text);
-      line-height:1.5;
+      color:var(--text); line-height:1.5;
     }
     .wrap{max-width:1200px;margin:0 auto;padding:30px 20px}
     .header{
       display:flex; justify-content:space-between; align-items:center; 
-      padding-bottom:20px; border-bottom:1px solid var(--line); margin-bottom:30px;
+      padding-bottom:20px; border-bottom:1px solid var(--line); margin-bottom:20px;
     }
     h1{margin:0; font-size:24px; color:#fff}
     .tag-critical{background:rgba(255,92,119,0.2); color:var(--bad); padding:4px 12px; border-radius:999px; font-size:12px; font-weight:bold; border:1px solid var(--bad)}
     
-    .grid{display:grid; grid-template-columns: 1fr 2fr; gap:20px}
+    /* Insight Box */
+    .insight-summary{
+      background: rgba(122, 162, 255, 0.1); border: 1px solid var(--accent);
+      border-radius: 14px; padding: 20px; margin-bottom: 25px;
+    }
+    .insight-summary h3{margin:0 0 10px; font-size:16px; color:var(--accent); display:flex; align-items:center; gap:8px}
+    .insight-text{font-size:14px; color:var(--text)}
+
+    .grid{display:grid; grid-template-columns: 1fr 2.5fr; gap:20px}
     @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
 
     .card{
@@ -47,7 +46,7 @@
     td{padding:10px 8px; border-bottom:1px solid rgba(255,255,255,0.05); font-size:13px}
     .num{font-family:monospace; text-align:right}
     .high-risk{color:var(--bad); font-weight:bold}
-    .period-header { background: rgba(122, 162, 255, 0.1); font-weight: bold; color: var(--accent); }
+    .period-header { background: rgba(122, 162, 255, 0.05); font-weight: bold; color: var(--accent); }
     
     .footer{margin-top:40px; font-size:12px; color:var(--muted); text-align:center}
   </style>
@@ -57,34 +56,41 @@
     <div class="header">
       <div>
         <h1>Missione Spesa: Analisi Anomalie</h1>
-        <div style="color:var(--muted); font-size:14px" id="reportSubtitle">Rilevamento outlier statistici: Ortofrutta e Performance Operativa</div>
+        <div style="color:var(--muted); font-size:14px" id="reportSubtitle">
+          Report generato il <span id="dynDate">--/--/----</span> · <span id="dynPeriodRange">Caricamento periodi...</span>
+        </div>
       </div>
-      <div class="tag-critical">LIVELLO RISCHIO: MONITORAGGIO</div>
+      <div class="tag-critical" id="riskLevel">LIVELLO RISCHIO: ANALISI...</div>
+    </div>
+
+    <div class="insight-summary">
+      <h3>🔍 Sintesi dei Risultati</h3>
+      <div id="smartInsight" class="insight-text">Analisi dei dati in corso...</div>
     </div>
 
     <div class="grid">
       <div class="card">
         <h2>📊 Performance Casse</h2>
-        <p style="font-size:13px; color:var(--muted)">Integrità operativa e scostamenti nei tempi di scansione.</p>
+        <p style="font-size:13px; color:var(--muted)">Integrità operativa e scostamenti.</p>
         <div class="table-container">
           <table>
             <thead>
               <tr>
                 <th>ID Cassa</th>
-                <th class="num">Scostamento</th>
+                <th class="num">Scost.</th>
                 <th class="num">Rischio</th>
               </tr>
             </thead>
             <tbody id="cashierBody">
-              <tr><td colspan="3" style="text-align:center; color:var(--muted)">Nessun dato caricato</td></tr>
+              <tr><td colspan="3" style="text-align:center; color:var(--muted)">Nessun dato</td></tr>
             </tbody>
           </table>
         </div>
       </div>
 
       <div class="card">
-        <h2>🍎 Audit Pesa Ortofrutta (Dettagliato)</h2>
-        <p style="font-size:13px; color:var(--muted)">Rilevamento discrepanze tra peso rilevato e codifica scontrino.</p>
+        <h2>🍎 Audit Pesa Ortofrutta</h2>
+        <p style="font-size:13px; color:var(--muted)">Discrepanze rilevate tra peso e codifica scontrino.</p>
         <div class="table-container">
           <table>
             <thead>
@@ -97,7 +103,7 @@
               </tr>
             </thead>
             <tbody id="produceBody">
-              <tr><td colspan="5" style="text-align:center; color:var(--muted)">Nessuna anomalia rilevata nel periodo</td></tr>
+              <tr><td colspan="5" style="text-align:center; color:var(--muted)">Nessuna anomalia</td></tr>
             </tbody>
           </table>
         </div>
@@ -110,34 +116,41 @@
   </div>
 
   <script>
-    // Injection Point
     const data = {{DATA_PLACEHOLDER}};
     
     function renderAnomalies() {
+      // 1. Dynamic Dates and Metadata
+      const reportDate = data.metadata?.analysis_date || new Date().toLocaleDateString('it-IT');
+      document.getElementById('dynDate').innerText = reportDate;
+
       const cBody = document.getElementById('cashierBody');
       const pBody = document.getElementById('produceBody');
+      const alerts = data.produce_alerts || data.alerts || [];
 
-      // 1. Render Cashier Data
+      // 2. Render Cashier Data
+      let highRiskCount = 0;
       if(data.cashier_anomalies && data.cashier_anomalies.length > 0) {
-        cBody.innerHTML = data.cashier_anomalies.map(item => `
-          <tr>
-            <td><b>${item.id}</b></td>
-            <td class="num">${item.deviation > 0 ? '+' : ''}${item.deviation}%</td>
-            <td class="num ${item.risk > 70 ? 'high-risk' : ''}">${item.risk}/100</td>
-          </tr>
-        `).join('');
+        cBody.innerHTML = data.cashier_anomalies.map(item => {
+          if(item.risk > 70) highRiskCount++;
+          return `
+            <tr>
+              <td><b>${item.id}</b></td>
+              <td class="num">${item.deviation > 0 ? '+' : ''}${item.deviation}%</td>
+              <td class="num ${item.risk > 70 ? 'high-risk' : ''}">${item.risk}/100</td>
+            </tr>
+          `;
+        }).join('');
       }
 
-      // 2. Render Produce Alerts (Iterating through periods)
+      // 3. Render Produce Alerts
       let produceHTML = "";
-      const alerts = data.produce_alerts || data.alerts || []; // Support both full and filtered JSON
-
+      let totalProduceAlerts = 0;
       if (alerts.length > 0) {
+        document.getElementById('dynPeriodRange').innerText = `Periodi: ${alerts[0].period} - ${alerts[alerts.length-1].period}`;
         alerts.forEach(periodEntry => {
-          // Add a header for the month
-          produceHTML += `<tr class="period-header"><td colspan="5">Periodo: ${periodEntry.period}</td></tr>`;
-          
+          produceHTML += `<tr class="period-header"><td colspan="5">Mese: ${periodEntry.period}</td></tr>`;
           if(periodEntry.details && periodEntry.details.length > 0) {
+            totalProduceAlerts += periodEntry.details.length;
             produceHTML += periodEntry.details.map(detail => `
               <tr>
                 <td>${detail.date_str || '-'}</td>
@@ -147,12 +160,30 @@
                 <td class="num">${detail.store_id}</td>
               </tr>
             `).join('');
-          } else {
-            produceHTML += `<tr><td colspan="5" style="text-align:center">Nessun dettaglio per questo periodo</td></tr>`;
           }
         });
         pBody.innerHTML = produceHTML;
       }
+
+      // 4. Generate Short Narrative Message
+      const insightBox = document.getElementById('smartInsight');
+      const riskTag = document.getElementById('riskLevel');
+      
+      let message = "";
+      if (highRiskCount > 0 || totalProduceAlerts > 10) {
+        riskTag.innerText = "LIVELLO RISCHIO: ALTO";
+        riskTag.style.background = "rgba(255, 92, 119, 0.3)";
+        message = `Attenzione: rilevati <b>${highRiskCount} operatori</b> con indice di rischio superiore a 70. `;
+        message += `L'audit ortofrutta ha evidenziato <b>${totalProduceAlerts} discrepanze</b> totali nel periodo analizzato. `;
+        message += "Si raccomanda una verifica immediata dei log di scansione per le casse segnalate in rosso.";
+      } else {
+        riskTag.innerText = "LIVELLO RISCHIO: NORMALE";
+        riskTag.style.background = "rgba(38, 208, 124, 0.2)";
+        riskTag.style.color = "var(--good)";
+        riskTag.style.border = "1px solid var(--good)";
+        message = "L'analisi non evidenzia criticità sistemiche. Gli scostamenti delle casse rientrano nei parametri operativi standard e le anomalie ortofrutta sono isolate.";
+      }
+      insightBox.innerHTML = message;
     }
 
     renderAnomalies();
