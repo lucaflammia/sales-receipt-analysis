@@ -228,7 +228,8 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
       "negozioCodice": "store_id",
       "scontrinoData": "date_str",
       "scontrinoOra": "time_str",
-      "articoloCodice": "product_id"
+      "articoloCodice": "product_id",
+      "cassiereCodice": "cashier_id"
     })
 
     # Feature Engineering
@@ -279,6 +280,8 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
     mission_features = ["basket_size", "basket_value_per_item", "freshness_weight_ratio"]
     mission_features = [f for f in mission_features if f in df.columns]
     df = df.with_columns([pl.col(mission_features).fill_null(0.0).fill_nan(0.0)])
+    
+    logger.info("Starting Mission Segmentation...")
     # Perform Clustering with Optimized Centroids
     df = feature_engineer.segment_shopping_missions(
       df, 
@@ -317,6 +320,27 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
     # We pass the raw line-item data to check price/weight ratios
     logger.info("Running Produce (Ortofrutta) Weight Audit...")
     produce_anomalies = feature_engineer.detect_produce_weighing_errors(raw_data_lazy.collect())
+
+    logger.info("Running Cashier Integrity Audit (Sweethearting)...")
+
+    # Ensure cashier_id exists
+    if "cashier_id" not in df.columns:
+      logger.warning("Log: cashier_id not found in aggregated features, forcing N/A")
+      df = df.with_columns(pl.lit("N/A").alias("cashier_id"))
+    
+    df = feature_engineer.detect_cashier_anomalies(df)
+    
+    # Filter for the report: Score -1 is the outlier flag, Z > 1.5 is the visibility threshold
+    cashier_alerts = df.select([
+      "cashier_id", "cashier_anomaly_score", "cashier_z_score"
+    ]).unique().filter(
+      (pl.col("cashier_anomaly_score") == -1) | (pl.col("cashier_z_score") > 1.5)
+    )
+    
+    if cashier_alerts.is_empty():
+      logger.info("Log: Still no significant cashier anomalies even with relaxed thresholds.")
+    else:
+      logger.info(f"Log: ALERT! {cashier_alerts.height} cashiers flagged for review.")
 
     # Anomaly Detection (Post-Clustering)
     # Using the same features to see which specific missions contain outliers
@@ -379,10 +403,11 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
     print(insights)
     logger.info("="*60)
 
-    return insights, produce_anomalies
+    return insights, produce_anomalies, cashier_alerts
 
   except Exception as e:
     logger.error(f"❌ Error for {year}-{month}: {e}", exc_info=True)
+    return None, None, None
 
 def main():
   parser = argparse.ArgumentParser()
@@ -400,6 +425,7 @@ def main():
   # Storage for the Global Summary
   global_insights = []
   global_anomalies = []
+  global_cashier_alerts = []
   
   start_month = args.month
   end_month = args.month_end or args.month
@@ -414,11 +440,16 @@ def main():
     current_fe = FeatureEngineer()
     
     # Process monthly data
-    monthly_insight, monthly_anomalies = process_partition(
+    monthly_insight, monthly_anomalies, monthly_cashier_alerts = process_partition(
       args.year, m, config, current_fe, 
       days=target_days, 
       fit_global=True # Usually safer to fit per-month for produce weighing
     )
+
+    # Check if the partition actually returned data
+    if monthly_insight is None:
+      logger.error(f"Partition {args.year}-{m:02d} failed. Skipping...")
+      continue
     
     if monthly_insight is not None:
       global_insights.append({
@@ -431,6 +462,12 @@ def main():
       global_anomalies.append({
         "period": f"{args.year}-{m:02d}",
         "details": monthly_anomalies.to_dicts()
+      })
+
+    if monthly_cashier_alerts is not None:
+      global_cashier_alerts.append({
+        "period": f"{args.year}-{m:02d}",
+        "details": monthly_cashier_alerts.to_dicts()
       })
     
     log_resource_usage(f"Completed Month {m}")
@@ -473,7 +510,7 @@ def main():
 
     # Aggregate the payload
     anomaly_payload = {
-      "cashier_anomalies": [], # Placeholder for future cashier logic
+      "cashier_anomalies": sanitize_anomalies(global_cashier_alerts),
       "produce_alerts": sanitize_anomalies(global_anomalies)
     }
 

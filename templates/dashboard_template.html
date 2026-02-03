@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Missione Spesa - Advanced Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <title>Missione Spesa - Strategic Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js" charset="utf-8"></script>
     <style>
         :root {
@@ -25,79 +25,75 @@
             color: var(--text);
             margin: 0;
             padding: 20px;
-            line-height: 1.5;
         }
 
-        .container { max-width: 1300px; margin: 0 auto; }
+        .container { max-width: 1400px; margin: 0 auto; }
 
         header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 20px;
-            background: rgba(16, 26, 51, .55);
+            padding: 25px;
+            background: rgba(16, 26, 51, 0.6);
             border: 1px solid var(--line);
-            border-radius: 18px;
-            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            backdrop-filter: blur(12px);
             margin-bottom: 25px;
         }
 
-        header h1 { margin: 0; font-size: 1.6rem; color: #fff; }
-
-        .tab-nav { display: flex; gap: 12px; margin-bottom: 20px; }
+        .tab-nav { display: flex; gap: 15px; margin-bottom: 20px; }
         .tab-btn {
             background: rgba(255,255,255,0.05);
             border: 1px solid var(--line);
             color: var(--muted);
-            padding: 10px 20px;
-            border-radius: 10px;
+            padding: 12px 24px;
+            border-radius: 12px;
             cursor: pointer;
             font-weight: 600;
-            transition: 0.3s;
+            transition: all 0.3s ease;
         }
         .tab-btn.active {
             background: var(--primary);
             color: var(--bg);
             border-color: var(--primary);
+            box-shadow: 0 4px 15px rgba(122, 162, 255, 0.3);
         }
 
         .tab-content { display: none; }
-        .tab-content.active { display: block; animation: fadeIn 0.4s ease; }
+        .tab-content.active { display: block; animation: fadeIn 0.4s ease-out; }
 
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
-        .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+        .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px; }
         .card { 
             grid-column: span 12;
-            background: linear-gradient(180deg, rgba(16,26,51,.72), rgba(15,23,48,.72));
+            background: rgba(16, 26, 51, 0.8);
             border: 1px solid var(--line); 
-            border-radius: 18px; 
-            padding: 20px; 
-            box-shadow: 0 14px 40px rgba(0,0,0,.25);
+            border-radius: 20px; 
+            padding: 24px;
         }
         .c-6 { grid-column: span 6; }
         .c-7 { grid-column: span 7; }
         .c-5 { grid-column: span 5; }
 
-        .card h2 { margin: 0 0 5px; font-size: 18px; color: #fff; }
-        .card .sub { margin-bottom: 15px; color: var(--muted); font-size: 13px; }
+        .kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 25px; }
+        .kpi-card { background: rgba(255,255,255,0.03); padding: 20px; border-radius: 15px; border: 1px solid var(--line); }
+        .kpi-val { font-size: 28px; font-weight: 700; color: #fff; margin-top: 5px; }
+        .kpi-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
 
-        .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
-        .kpi { background: rgba(255,255,255,0.035); padding: 15px; border-radius: 16px; border: 1px solid var(--line); }
-        .kpi .lbl { color: var(--muted); font-size: 12px; text-transform: uppercase; }
-        .kpi .val { font-size: 24px; font-weight: bold; margin-top: 5px; color: #fff; }
-        .kpi .delta { font-size: 12px; margin-top: 8px; color: var(--muted); }
-        .up { color: var(--good); } .down { color: var(--bad); }
-
-        .table-wrap { overflow-x: auto; margin-top: 10px; }
-        table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
-        th { text-align: left; font-size: 11px; color: var(--muted); padding: 12px; background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--line); text-transform: uppercase; }
-        td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,.05); font-size: 13px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th { text-align: left; font-size: 11px; color: var(--muted); padding: 15px; border-bottom: 1px solid var(--line); text-transform: uppercase; }
+        td { padding: 15px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 14px; }
         .num { font-family: 'JetBrains Mono', monospace; text-align: right; }
-        
-        .anomaly-badge { background: var(--bad); color: white; padding: 2px 8px; border-radius: 5px; font-size: 12px; margin-left: 10px; }
-        .pill-count { background: rgba(255, 92, 119, 0.15); color: var(--bad); padding: 2px 8px; border-radius: 6px; font-weight: bold; }
-        .hr { height: 1px; background: var(--line); margin: 15px 0; }
+
+        .pill-count { 
+            padding: 4px 10px; 
+            border-radius: 8px; 
+            font-weight: 700; 
+            font-size: 11px;
+            display: inline-block;
+        }
+        .anomaly-badge { background: var(--bad); color: #fff; padding: 2px 8px; border-radius: 6px; font-size: 12px; margin-left: 8px; }
     </style>
 </head>
 <body>
@@ -105,128 +101,113 @@
 <div class="container">
     <header>
         <div>
-            <h1 id="title">Missione Spesa Analytics</h1>
-            <div id="subtitle" style="color: var(--muted); font-size: 0.8rem; margin-top: 4px;"></div>
+            <h1 id="main-title" style="margin:0; font-size: 1.8rem;">🛒 Missione Spesa Analytics</h1>
+            <div id="meta-subtitle" style="color: var(--muted); font-size: 0.85rem; margin-top: 5px;"></div>
         </div>
-        <button style="background: var(--primary); border:none; padding: 8px 18px; border-radius: 8px; font-weight: bold; cursor: pointer;" onclick="window.print()">Esporta PDF</button>
+        <div id="export-controls">
+            <button class="tab-btn" style="background: var(--good); color: var(--bg);" onclick="window.print()">Stampa PDF</button>
+        </div>
     </header>
 
     <div class="tab-nav">
-        <button class="tab-btn active" onclick="switchTab(event, 'missioni')">🛒 Overview Missioni</button>
-        <button class="tab-btn" onclick="switchTab(event, 'anomalie')">
-            🛡️ Audit & Anomalie <span id="total-anomaly-count" class="anomaly-badge">0</span>
+        <button class="tab-btn active" onclick="switchTab(event, 'missions-tab')">📊 Panoramica Missioni</button>
+        <button class="tab-btn" onclick="switchTab(event, 'audit-tab')">
+            🛡️ Registro Audit <span id="total-anomaly-count" class="anomaly-badge">0</span>
         </button>
     </div>
 
-    <div id="missioni" class="tab-content active">
+    <div id="missions-tab" class="tab-content active">
         <div class="grid">
             <div class="card c-7">
-                <h2>Executive summary</h2>
-                <div class="sub">Sintesi dei volumi e delle dinamiche principali del periodo.</div>
-                <div class="kpis">
-                    <div class="kpi">
-                        <div class="lbl">Scontrini totali</div>
-                        <div class="val" id="kpiReceipts">–</div>
-                        <div id="kpiReceiptsDelta" class="delta">–</div>
+                <h2 style="margin-top:0">Riepilogo Strategico</h2>
+                <div class="kpi-grid">
+                    <div class="kpi-card">
+                        <div class="kpi-label">Volume Scontrini</div>
+                        <div id="total-receipts" class="kpi-val">--</div>
                     </div>
-                    <div class="kpi">
-                        <div class="lbl">Fatturato totale</div>
-                        <div class="val" id="kpiRevenue">–</div>
-                        <div id="kpiRevenueDelta" class="delta">–</div>
+                    <div class="kpi-card">
+                        <div class="kpi-label">Fatturato Totale</div>
+                        <div id="total-revenue" class="kpi-val">--</div>
                     </div>
-                    <div class="kpi">
-                        <div class="lbl">Scontrino medio (ATV)</div>
-                        <div class="val" id="kpiATV">–</div>
-                        <div id="kpiATVDelta" class="delta">–</div>
+                    <div class="kpi-card">
+                        <div class="kpi-label">Scontrino Medio</div>
+                        <div id="avg-ticket" class="kpi-val">--</div>
                     </div>
                 </div>
-                <div class="hr"></div>
-                <div id="autoInsights"></div>
+                <div id="mission-bar-chart" style="height: 400px;"></div>
             </div>
 
             <div class="card c-5">
-                <h2>Mix missioni – quote fatturato (%)</h2>
-                <div class="sub">Ripartizione complessiva per tipologia di spesa.</div>
-                <div id="shareDonutChart"></div>
-            </div>
-
-            <div class="card c-6">
-                <h2>Trend mensile – Fatturato (€)</h2>
-                <div id="revChart"></div>
-            </div>
-            <div class="card c-6">
-                <h2>Trend mensile – Scontrini (qty)</h2>
-                <div id="rcptChart"></div>
+                <h2 style="margin-top:0">Mix Missioni (%)</h2>
+                <div id="mission-donut-chart" style="height: 510px;"></div>
             </div>
 
             <div class="card">
-                <h2>Dettaglio mensile consolidato</h2>
-                <div class="table-wrap">
-                    <table id="monthlyTotalsTable">
-                        <thead>
-                            <tr>
-                                <th>Mese</th>
-                                <th class="num">Scontrini</th>
-                                <th class="num">Fatturato</th>
-                                <th class="num">Scontrino medio</th>
-                                <th class="num">Δ Fatturato MoM</th>
-                            </tr>
-                        </thead>
-                        <tbody id="monthlyTotalsBody"></tbody>
-                    </table>
-                </div>
+                <h2>Analisi Dettagliata Performance</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Missione Spesa (Cluster)</th>
+                            <th class="num">Scontrini</th>
+                            <th class="num">Fatturato (€)</th>
+                            <th class="num">Valore Medio</th>
+                            <th class="num">Pezzi Medi</th>
+                            <th class="num">Quota Traffico</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mission-table-body"></tbody>
+                </table>
             </div>
         </div>
     </div>
 
-    <div id="anomalie" class="tab-content">
+    <div id="audit-tab" class="tab-content">
         <div class="grid">
-            <div class="card">
-                <h2 style="color: var(--bad);">🍎 Registro Audit Ortofrutta</h2>
-                <div class="sub">Anomalie raggruppate per scontrino.</div>
-                <div class="table-wrap">
-                    <table id="produce-table">
-                        <thead>
-                            <tr>
-                                <th>Data</th>
-                                <th>ID Scontrino</th>
-                                <th class="num">Anomalie rilevate</th>
-                                <th class="num">Punto Vendita</th>
-                            </tr>
-                        </thead>
-                        <tbody id="produce-body"></tbody>
-                    </table>
-                </div>
+            <div class="card c-6">
+                <h2 style="color: var(--primary); margin-top:0">👤 Audit Operatori (Sweethearting)</h2>
+                <p style="color:var(--muted); font-size:13px">Analisi statistica degli sconti applicati dai cassieri (Z-Score > 1.5).</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Identificativo</th>
+                            <th class="num">Z-Score</th>
+                            <th>Stato Rischio</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cashier-body"></tbody>
+                </table>
+            </div>
+
+            <div class="card c-6">
+                <h2 style="color: var(--bad); margin-top:0">🍎 Anomalie Ortofrutta</h2>
+                <p style="color:var(--muted); font-size:13px">Scontrini con discrepanze peso/prezzo rilevate via algoritmo MAD.</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Data</th>
+                            <th>ID Scontrino</th>
+                            <th>Negozio</th>
+                            <th class="num">Tipo Errore</th>
+                        </tr>
+                    </thead>
+                    <tbody id="produce-body"></tbody>
+                </table>
             </div>
         </div>
     </div>
 </div>
 
 <script>
+    // Data injected by Python backend
     const dashboardData = {{DASHBOARD_DATA_JSON}};
 
-    const eur = (v) => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(v);
-    const num = (v) => new Intl.NumberFormat('it-IT').format(v);
-    const pct = (v) => (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
-    const monthNames = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"];
+    const fmtEur = (v) => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(v);
+    const fmtNum = (v) => new Intl.NumberFormat('it-IT').format(v);
 
-    // Utility per rimuovere il prefisso "20-" dalla data (es. "20-Ottobre" -> "Ottobre")
-    function cleanDateString(str) {
-        if (!str) return "";
-        return str.replace(/^20-/, "");
-    }
-
-    function formatItalianPeriod(periodStr, year) {
-        const parts = periodStr.match(/(\d{1,2})/g);
-        if (!parts) return periodStr;
-        const formatted = parts.map(p => {
-            const mIdx = parseInt(p) - 1;
-            return monthNames[mIdx] ? `${monthNames[mIdx]} ${year}` : p;
-        });
-        return formatted.length > 1 ? `${formatted[formatted.length - 1]}` : formatted[0];
-    }
-
-    document.addEventListener("DOMContentLoaded", () => initDashboard());
+    document.addEventListener("DOMContentLoaded", () => {
+        renderMissionData();
+        renderAuditData();
+    });
 
     function switchTab(evt, tabId) {
         document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
@@ -236,152 +217,114 @@
         window.dispatchEvent(new Event('resize'));
     }
 
-    function initDashboard() {
+    function renderMissionData() {
         const meta = dashboardData.metadata;
-        const year = meta.anno || 2024;
-        const itaPeriod = cleanDateString(formatItalianPeriod(meta.periodo, year));
+        const missionTab = dashboardData.tabs.missioni.data;
+        document.getElementById('meta-subtitle').innerText = `Analisi Periodo: ${meta.periodo} • Generato: ${meta.data_generazione}`;
+
+        if (!missionTab.monthly_insights) return;
+
+        // Flatten data from all months for the aggregate view
+        const allRows = missionTab.monthly_insights.flatMap(m => m.results);
+        const labels = [], revs = [], receipts = [];
+        let totalRev = 0, totalRec = 0;
+
+        const tableBody = document.getElementById('mission-table-body');
         
-        document.getElementById('title').innerText = meta.titolo_dashboard || "Missione Spesa Analytics";
-        document.getElementById('subtitle').innerText = `Report Insights • Periodo: ${itaPeriod} • Generato il ${meta.data_generazione}`;
+        allRows.forEach(row => {
+            totalRev += row.total_mission_revenue;
+            totalRec += row.receipt_count;
+            labels.push(row.shopping_mission);
+            revs.push(row.total_mission_revenue);
 
-        const insights = dashboardData.tabs.missioni.data.monthly_insights || [];
-        const anomalyData = dashboardData.tabs.anomalie.data;
-
-        processAndRenderMissioni(insights);
-        renderAuditTab(anomalyData, year);
-        renderDonutChart(insights);
-    }
-
-    function processAndRenderMissioni(insights) {
-        let totalRev = 0, totalRcp = 0;
-        const monthlyData = [];
-
-        insights.forEach((m, idx) => {
-            const mRev = m.results.reduce((s, r) => s + r.total_mission_revenue, 0);
-            const mRcp = m.results.reduce((s, r) => s + r.receipt_count, 0);
-            totalRev += mRev;
-            totalRcp += mRcp;
-            let deltaRev = (idx > 0) ? ((mRev / monthlyData[idx - 1].revenue) - 1) * 100 : 0;
-
-            monthlyData.push({ 
-                period: cleanDateString(m.period), 
-                revenue: mRev, 
-                receipts: mRcp, 
-                atv: mRev / mRcp,
-                delta: deltaRev
-            });
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td style="font-weight:600; color:var(--primary)">${row.shopping_mission}</td>
+                <td class="num">${fmtNum(row.receipt_count)}</td>
+                <td class="num">${fmtEur(row.total_mission_revenue)}</td>
+                <td class="num">${fmtEur(row.avg_trip_value)}</td>
+                <td class="num">${row.avg_items_per_trip.toFixed(1)}</td>
+                <td class="num"><b>${row.traffic_share_pct}%</b></td>
+            `;
+            tableBody.appendChild(tr);
         });
 
-        document.getElementById('kpiReceipts').innerText = num(totalRcp);
-        document.getElementById('kpiRevenue').innerText = eur(totalRev);
-        document.getElementById('kpiATV').innerText = eur(totalRev / totalRcp);
+        document.getElementById('total-receipts').innerText = fmtNum(totalRec);
+        document.getElementById('total-revenue').innerText = fmtEur(totalRev);
+        document.getElementById('avg-ticket').innerText = fmtEur(totalRev / totalRec);
 
-        const last = monthlyData[monthlyData.length - 1];
-        if (monthlyData.length > 1) {
-            document.getElementById('kpiRevenueDelta').innerHTML = `Ultimo MoM: <span class="${last.delta < 0 ? 'down' : 'up'}">${pct(last.delta)}</span>`;
-        }
-
-        document.getElementById('monthlyTotalsBody').innerHTML = monthlyData.map(m => `
-            <tr>
-                <td><b>${m.period}</b></td>
-                <td class="num">${num(m.receipts)}</td>
-                <td class="num">${eur(m.revenue)}</td>
-                <td class="num">${eur(m.atv)}</td>
-                <td class="num ${m.delta < 0 ? 'down' : 'up'}">${m.delta === 0 ? '-' : pct(m.delta)}</td>
-            </tr>
-        `).join('');
-
-        renderOverviewTrendCharts(monthlyData);
-    }
-
-    function renderOverviewTrendCharts(monthlyData) {
-        const layoutBase = {
-            paper_bgcolor: 'rgba(0,0,0,0)',
-            plot_bgcolor: 'rgba(0,0,0,0)',
-            font: { color: '#a8b3e6', size: 10 },
-            margin: { t: 10, b: 30, l: 40, r: 10 },
-            height: 240
+        // Charts logic
+        const chartLayout = {
+            paper_bgcolor: 'transparent',
+            plot_bgcolor: 'transparent',
+            font: { color: '#fff', family: 'Inter' },
+            margin: { t: 40, b: 40, l: 60, r: 20 }
         };
 
-        Plotly.newPlot('revChart', [{
-            x: monthlyData.map(m => m.period), y: monthlyData.map(m => m.revenue), type: 'scatter', mode: 'lines+markers',
-            line: { color: '#7aa2ff', width: 3 }, fill: 'tozeroy', fillcolor: 'rgba(122,162,255,0.1)'
-        }], layoutBase);
-
-        Plotly.newPlot('rcptChart', [{
-            x: monthlyData.map(m => m.period), y: monthlyData.map(m => m.receipts), type: 'bar',
-            marker: { color: '#2dd4bf', opacity: 0.7 }
-        }], layoutBase);
-    }
-
-    function renderDonutChart(insights) {
-        const missionAgg = {};
-        insights.forEach(m => {
-            m.results.forEach(r => {
-                missionAgg[r.shopping_mission] = (missionAgg[r.shopping_mission] || 0) + r.total_mission_revenue;
-            });
-        });
-
-        const donutData = [{
-            values: Object.values(missionAgg),
-            labels: Object.keys(missionAgg),
+        Plotly.newPlot('mission-donut-chart', [{
+            values: revs,
+            labels: labels,
             type: 'pie',
-            hole: .6,
-            marker: { colors: ['#7aa2ff', '#ffd166', '#2dd4bf', '#f97316', '#a78bfa', '#fb7185'] },
-            textinfo: 'percent',
-            hoverinfo: 'label+value',
-            textposition: 'outside',
-            automargin: true
-        }];
+            hole: 0.5,
+            marker: { colors: ['#7aa2ff', '#26d07c', '#ffcc66', '#ff5c77', '#a8b3e6', '#c97aff'] }
+        }], { ...chartLayout, showlegend: true, legend: { orientation: 'h', y: -0.1 } });
 
-        const donutLayout = {
-            paper_bgcolor: 'rgba(0,0,0,0)',
-            plot_bgcolor: 'rgba(0,0,0,0)',
-            font: { color: '#a8b3e6', size: 11 },
-            margin: { t: 20, b: 20, l: 20, r: 20 },
-            height: 320,
-            showlegend: true,
-            legend: { orientation: 'h', y: -0.1, x: 0.5, xanchor: 'center' }
-        };
-
-        Plotly.newPlot('shareDonutChart', donutData, donutLayout);
+        Plotly.newPlot('mission-bar-chart', [{
+            x: labels,
+            y: revs,
+            type: 'bar',
+            marker: { color: '#7aa2ff', opacity: 0.8 }
+        }], { ...chartLayout, xaxis: { showgrid: false }, yaxis: { gridcolor: 'rgba(255,255,255,0.1)' } });
     }
 
-    function renderAuditTab(anomalyData, year) {
-        const body = document.getElementById('produce-body');
-        const badge = document.getElementById('total-anomaly-count');
-        let html = "", totalAnomalies = 0;
+    function renderAuditData() {
+        const auditData = dashboardData.tabs.anomalie.data;
+        const meta = dashboardData.metadata;
+        const cashierBody = document.getElementById('cashier-body');
+        const produceBody = document.getElementById('produce-body');
+        let cashierHtml = '', produceHtml = '', totalAlerts = 0;
 
-        (anomalyData.produce_alerts || []).forEach(period => {
-            const itaMonth = cleanDateString(formatItalianPeriod(period.period, year));
-            html += `<tr class="period-row" style="background:rgba(122,162,255,0.05)"><td colspan="4"><b>${itaMonth}</b></td></tr>`;
+        // 1. Render Cashier Anomalies (Sweethearting)
+        (auditData.cashier_anomalies || []).forEach(period => {
+            cashierHtml += `<tr style="background:rgba(122,162,255,0.08)"><td colspan="3"><b style="color:var(--primary)">📅 Mese: ${period.period}</b></td></tr>`;
             
-            const grouped = {};
-            period.details.forEach(d => {
-                const cleanDate = cleanDateString(d.date_str);
-                const key = `${cleanDate}_${d.receipt_id}`;
-                if(!grouped[key]) {
-                    grouped[key] = { date: cleanDate, id: d.receipt_id.split('-').pop(), store: d.store_id, count: 0 };
-                }
-                grouped[key].count++;
-                totalAnomalies++;
-            });
+            if (!period.details || period.details.length === 0) {
+                cashierHtml += `<tr><td colspan="3" style="text-align:center; color:var(--muted); padding:15px;">Nessuna anomalia rilevata.</td></tr>`;
+            } else {
+                period.details.forEach(c => {
+                    totalAlerts++;
+                    const sevColor = c.cashier_z_score > 3 ? 'var(--bad)' : 'var(--warn)';
+                    const sevLabel = c.cashier_z_score > 3 ? 'CRITICO' : 'SOSPETTO';
+                    cashierHtml += `
+                        <tr>
+                            <td><b>ID Operatore: ${c.cashier_id}</b></td>
+                            <td class="num" style="color:${sevColor}; font-weight:bold">${c.cashier_z_score.toFixed(2)}</td>
+                            <td><span class="pill-count" style="background:${sevColor}22; color:${sevColor}; border:1px solid ${sevColor}44">${sevLabel}</span></td>
+                        </tr>`;
+                });
+            }
+        });
 
-            Object.values(grouped).forEach(g => {
-                html += `
-                <tr>
-                    <td>${g.date}</td>
-                    <td><code>${g.id}</code></td>
-                    <td class="num"><span class="pill-count">${g.count}</span></td>
-                    <td class="num">${g.store}</td>
-                </tr>`;
+        // 2. Render Produce Anomalies
+        (auditData.produce_alerts || []).forEach(period => {
+            produceHtml += `<tr style="background:rgba(255,92,119,0.08)"><td colspan="4"><b style="color:var(--bad)">📅 Mese: ${period.period}</b></td></tr>`;
+            
+            period.details.forEach(p => {
+                totalAlerts++;
+                produceHtml += `
+                    <tr>
+                        <td>${p.date_str}</td>
+                        <td style="font-family:monospace">${p.receipt_id}</td>
+                        <td>Store #${p.store_id}</td>
+                        <td class="num"><span class="pill-count" style="background:rgba(255,92,119,0.1); color:var(--bad)">PESO ERRATO</span></td>
+                    </tr>`;
             });
         });
 
-        badge.innerText = totalAnomalies;
-        body.innerHTML = html || '<tr><td colspan="4">Nessun alert rilevato</td></tr>';
+        document.getElementById('total-anomaly-count').innerText = totalAlerts;
+        cashierBody.innerHTML = cashierHtml || '<tr><td colspan="3" style="text-align:center;">Nessun dato audit.</td></tr>';
+        produceBody.innerHTML = produceHtml || '<tr><td colspan="4" style="text-align:center;">Nessun dato audit.</td></tr>';
     }
 </script>
-
 </body>
 </html>

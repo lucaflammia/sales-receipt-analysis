@@ -79,7 +79,9 @@ class FeatureEngineer:
       pl.first("hour_of_day"),
       pl.first("is_weekend"),
       pl.first("store_numeric"),
-      pl.first("peak_hour_pressure_numeric")
+      pl.first("peak_hour_pressure_numeric"),
+      pl.first("cashier_id"),
+      pl.first("store_id")
     ])
 
     agg_lf = agg_lf.with_columns([
@@ -342,53 +344,62 @@ class FeatureEngineer:
 
   def detect_cashier_anomalies(self, df: pl.DataFrame):
     """
-    SWEETHEARTING DETECTION (High-Precision)
-    Algorithm: Modified Z-Score on Cashier Performance.
-    Flags cashiers with suspiciously low price-per-item metrics.
+    Flags potential sweethearting with relaxed statistical thresholds.
     """
-    logger.info("Auditing cashier behavior for sweethearting anomalies...")
+    if "cashier_id" not in df.columns or df.height < 2:
+      logger.warning("Log: Skipping Cashier Audit - cashier_id column missing or dataframe empty.")
+      return df.with_columns([
+        pl.lit(0).alias("cashier_anomaly_score"),
+        pl.lit(0.0).alias("cashier_z_score")
+      ])
 
-    # Aggregate stats per cashier using Polars
-    # We focus on the median price-per-item to avoid one big transaction masking fraud
+    # 1. Aggregate stats per cashier
     cashier_stats = df.group_by("cashier_id").agg([
-      pl.col("basket_value_per_item").median().alias("cashier_med_price"),
-      pl.col("basket_value").mean().alias("avg_basket_total"),
+      pl.col("discount_ratio").mean().alias("avg_discount_rate"),
       pl.len().alias("transaction_count")
     ])
 
-    if cashier_stats.height < 5:
-      logger.warning("Insufficient cashier data for statistical audit.")
-      return df.with_columns(pl.lit(1).alias("cashier_anomaly_score"))
+    # DIAGNOSTIC LOG: This helps you see why alerts might be empty
+    unique_cashiers = cashier_stats.height
+    logger.info(f"Audit Diagnostic: Found {unique_cashiers} unique cashiers. Max transactions by one cashier: {cashier_stats['transaction_count'].max()}")
 
-    # Calculate Global Median and MAD across all cashiers
-    # This defines what "Normal" looks like for the whole store
-    stats_with_mad = cashier_stats.with_columns([
-      pl.col("cashier_med_price").median().alias("global_med_price")
-    ]).with_columns([
-      (pl.col("cashier_med_price") - pl.col("global_med_price")).abs().median().alias("global_mad_price")
-    ])
+    # Relaxed threshold: Only 2 transactions needed to be eligible for audit
+    eligible_stats = cashier_stats.filter(pl.col("transaction_count") >= 2)
 
-    # Apply Modified Z-Score
-    # We flag cashiers who are significantly BELOW the median price 
-    # (Threshold 3.5 is standard, use higher for less anomalies)
-    threshold = 3.5
-    stats_with_mad = stats_with_mad.with_columns([
-      (((pl.col("cashier_med_price") - pl.col("global_med_price")) / 
-        (pl.col("global_mad_price") * 1.4826)).alias("cashier_z_score"))
-    ]).with_columns([
-      pl.when(pl.col("cashier_z_score") < -threshold)
-      .then(pl.lit(-1)) # Anomaly (Sweethearting)
-      .otherwise(pl.lit(1))
+    if eligible_stats.height < 2:
+      logger.warning("Log: Cashier Audit skipped - need at least 2 distinct cashiers with multiple transactions.")
+      return df.with_columns([
+        pl.lit(0).alias("cashier_anomaly_score"),
+        pl.lit(0.0).alias("cashier_z_score")
+      ])
+
+    # Statistical Deviation
+    avg_rate = eligible_stats["avg_discount_rate"].mean()
+    std_rate = eligible_stats["avg_discount_rate"].std()
+    
+    # If everyone has the same discount rate, std is 0. Avoid division by zero.
+    if std_rate == 0 or std_rate is None:
+      std_rate = 0.001 
+
+    # Sensitivity: Lowered Z-Score threshold to 1.5 (Top ~7% of outliers)
+    eligible_stats = eligible_stats.with_columns(
+      ((pl.col("avg_discount_rate") - avg_rate) / std_rate).alias("cashier_z_score")
+    ).with_columns(
+      pl.when(pl.col("cashier_z_score") > 1.5)
+      .then(pl.lit(-1))
+      .otherwise(pl.lit(0))
       .alias("cashier_anomaly_score")
-    ])
-
-    # Join back to the main dataframe
-    # We only need the score for the final report
-    return df.join(
-      stats_with_mad.select(["cashier_id", "cashier_anomaly_score", "cashier_z_score"]),
-      on="cashier_id", 
-      how="left"
     )
+
+    # Join back to main dataframe
+    return df.join(
+      eligible_stats.select(["cashier_id", "cashier_z_score", "cashier_anomaly_score"]),
+      on="cashier_id",
+      how="left"
+    ).with_columns([
+      pl.col("cashier_z_score").fill_null(0.0),
+      pl.col("cashier_anomaly_score").fill_null(0)
+    ])
 
   def detect_produce_weighing_errors(self, df: pl.DataFrame):
     """
