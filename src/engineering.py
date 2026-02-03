@@ -342,27 +342,53 @@ class FeatureEngineer:
 
   def detect_cashier_anomalies(self, df: pl.DataFrame):
     """
-    SWEETHEARTING DETECTION
-    Algorithm: Isolation Forest per Cashier.
-    Flags cashiers with significantly lower average item prices than peers.
+    SWEETHEARTING DETECTION (High-Precision)
+    Algorithm: Modified Z-Score on Cashier Performance.
+    Flags cashiers with suspiciously low price-per-item metrics.
     """
-    # Aggregate stats per cashier
+    logger.info("Auditing cashier behavior for sweethearting anomalies...")
+
+    # Aggregate stats per cashier using Polars
+    # We focus on the median price-per-item to avoid one big transaction masking fraud
     cashier_stats = df.group_by("cashier_id").agg([
-      pl.col("basket_value_per_item").mean().alias("avg_item_value"),
+      pl.col("basket_value_per_item").median().alias("cashier_med_price"),
       pl.col("basket_value").mean().alias("avg_basket_total"),
       pl.len().alias("transaction_count")
-    ]).to_pandas()
+    ])
 
-    if len(cashier_stats) < 5:
-      return df
+    if cashier_stats.height < 5:
+      logger.warning("Insufficient cashier data for statistical audit.")
+      return df.with_columns(pl.lit(1).alias("cashier_anomaly_score"))
 
-    # Model cashier behavior
-    clf = IsolationForest(contamination=0.05, random_state=42)
-    cashier_stats["cashier_anomaly_score"] = clf.fit_predict(cashier_stats[["avg_item_value", "avg_basket_total"]])
-    
-    # Convert back to Polars and join
-    anomaly_map = pl.from_pandas(cashier_stats[["cashier_id", "cashier_anomaly_score"]])
-    return df.join(anomaly_map, on="cashier_id", how="left")
+    # Calculate Global Median and MAD across all cashiers
+    # This defines what "Normal" looks like for the whole store
+    stats_with_mad = cashier_stats.with_columns([
+      pl.col("cashier_med_price").median().alias("global_med_price")
+    ]).with_columns([
+      (pl.col("cashier_med_price") - pl.col("global_med_price")).abs().median().alias("global_mad_price")
+    ])
+
+    # Apply Modified Z-Score
+    # We flag cashiers who are significantly BELOW the median price 
+    # (Threshold 3.5 is standard, use higher for less anomalies)
+    threshold = 3.5
+    stats_with_mad = stats_with_mad.with_columns([
+      (((pl.col("cashier_med_price") - pl.col("global_med_price")) / 
+        (pl.col("global_mad_price") * 1.4826)).alias("cashier_z_score"))
+    ]).with_columns([
+      pl.when(pl.col("cashier_z_score") < -threshold)
+      .then(pl.lit(-1)) # Anomaly (Sweethearting)
+      .otherwise(pl.lit(1))
+      .alias("cashier_anomaly_score")
+    ])
+
+    # Join back to the main dataframe
+    # We only need the score for the final report
+    return df.join(
+      stats_with_mad.select(["cashier_id", "cashier_anomaly_score", "cashier_z_score"]),
+      on="cashier_id", 
+      how="left"
+    )
 
   def detect_produce_weighing_errors(self, df: pl.DataFrame):
     """
