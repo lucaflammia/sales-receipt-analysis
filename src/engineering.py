@@ -79,7 +79,9 @@ class FeatureEngineer:
       pl.first("hour_of_day"),
       pl.first("is_weekend"),
       pl.first("store_numeric"),
-      pl.first("peak_hour_pressure_numeric")
+      pl.first("peak_hour_pressure_numeric"),
+      pl.first("cashier_id"),
+      pl.first("store_id")
     ])
 
     agg_lf = agg_lf.with_columns([
@@ -132,7 +134,7 @@ class FeatureEngineer:
     rf = RandomForestRegressor(
       n_estimators=100, # Reduced for speed, keep 500 if latency isn't an issue
       random_state=self.random_state,
-      n_jobs=-1 
+      n_jobs=1 # Force single-threaded for reproducibility 
     )
     rf.fit(X, y)
     
@@ -221,12 +223,14 @@ class FeatureEngineer:
       .to_dict()
     )
 
-  def add_anomaly_score(self, df: pl.DataFrame | pl.LazyFrame, features: list, model_path: str = None):
+  def add_anomaly_score(self, df: pl.DataFrame | pl.LazyFrame, features: list):
     """Adds anomaly scores using Isolation Forest."""
     eager_df = self._ensure_eager(df)
+    # Force a deterministic sort before ML
+    eager_df = eager_df.sort("receipt_id")
     data_for_model = eager_df.select(features).to_pandas()
 
-    model = IsolationForest(random_state=self.random_state)
+    model = IsolationForest(random_state=self.random_state, n_jobs=1, contamination='auto')
     model.fit(data_for_model)
 
     scores = model.decision_function(data_for_model)
@@ -338,6 +342,107 @@ class FeatureEngineer:
     plt.close()
     logging.info(f"📊 Top 2D pairwise plots saved: {path}")
 
+  def detect_cashier_anomalies(self, df: pl.DataFrame):
+    """
+    Flags potential sweethearting with relaxed statistical thresholds.
+    """
+    # Early Exit Guardrails
+    if "cashier_id" not in df.columns or df.height < 2:
+      logger.warning("Log: Skipping Cashier Audit - cashier_id column missing or insufficient data.")
+      return df.with_columns([
+        pl.lit(0).alias("cashier_anomaly_score"),
+        pl.lit(0.0).alias("cashier_z_score")
+      ])
+
+    # Aggregate stats per cashier
+    # Ensure discount_ratio exists and is clean before aggregation
+    cashier_stats = df.group_by("cashier_id").agg([
+      pl.col("discount_ratio").fill_null(0.0).mean().alias("avg_discount_rate"),
+      pl.len().alias("transaction_count")
+    ])
+
+    unique_cashiers = cashier_stats.height
+    logger.info(f"Audit Diagnostic: Processing {unique_cashiers} unique cashiers.")
+
+    # Filter for Eligibility (relaxed to 2 transactions)
+    eligible_stats = cashier_stats.filter(pl.col("transaction_count") >= 2)
+
+    if eligible_stats.height < 2:
+      logger.warning("Log: Cashier Audit skipped - need at least 2 distinct cashiers for peer comparison.")
+      return df.with_columns([
+        pl.lit(0).alias("cashier_anomaly_score"),
+        pl.lit(0.0).alias("cashier_z_score")
+      ])
+
+    # Statistical Baseline Calculation
+    avg_rate = eligible_stats["avg_discount_rate"].mean()
+    std_rate = eligible_stats["avg_discount_rate"].std()
+    
+    # Robustness check: if std_rate is 0 or NaN, peer comparison is impossible
+    if std_rate is None or std_rate == 0:
+      logger.warning("Log: Zero variance in discount rates. All cashiers behaving identically.")
+      std_rate = 0.001 
+
+    # Z-Score Calculation & Flagging
+    # Threshold 1.5 aligns with your dashboard "SOSPETTO" label
+    eligible_stats = eligible_stats.with_columns(
+      ((pl.col("avg_discount_rate") - avg_rate) / std_rate).alias("cashier_z_score")
+    ).with_columns(
+      pl.when(pl.col("cashier_z_score") > 1.5)
+      .then(pl.lit(-1))
+      .otherwise(pl.lit(0))
+      .alias("cashier_anomaly_score")
+    )
+
+    # We join back to the original df to tag individual transactions
+    return df.join(
+      eligible_stats.select(["cashier_id", "cashier_z_score", "cashier_anomaly_score"]),
+      on="cashier_id",
+      how="left"
+    ).with_columns([
+      pl.col("cashier_z_score").fill_null(0.0),
+      pl.col("cashier_anomaly_score").fill_null(0).cast(pl.Int8)
+    ])
+
+  def detect_produce_weighing_errors(self, df: pl.DataFrame):
+    """
+    ORTOFRUTTA WEIGHT AUDIT
+    Algorithm: Median Absolute Deviation (MAD)
+    Flags produce items with anomalous unit prices based on weight.
+    """
+    logger.info("Executing High-Precision Produce Audit (MAD-based)...")
+
+    # Filter and deterministic sort
+    produce_df = df.filter((pl.col("weight") > 0) & (pl.col("line_total") > 0)).sort("receipt_id")
+
+    if produce_df.is_empty():
+      return pl.DataFrame()
+
+    # Calculate Median and MAD (Robust Statistics)
+    # MAD is the median of the absolute deviations from the data's median
+    produce_df = produce_df.with_columns([
+      (pl.col("line_total") / pl.col("weight")).alias("unit_price")
+    ]).with_columns([
+      pl.col("unit_price").median().over("product_id").alias("med_price"),
+    ]).with_columns([
+      (pl.col("unit_price") - pl.col("med_price")).abs().median().over("product_id").alias("mad_price")
+    ])
+
+    # Identify outliers using the Modified Z-Score
+    # We use 1.4826 as the consistency constant to make MAD comparable to Std Dev
+    anomalies = produce_df.filter(
+      (pl.col("mad_price") > 0) & 
+      (((pl.col("unit_price") - pl.col("med_price")).abs() / (pl.col("mad_price") * 1.4826)) > 6.0)
+    )
+
+    return anomalies.select([
+      pl.col("date_str"),
+      pl.col("receipt_id"),
+      pl.col("product_id").alias("scontrinoBarcode"),
+      pl.lit("Peso/Prezzo Errante").alias("scontrinoTipo"),
+      pl.col("store_id")
+    ])
+  
   def segment_shopping_missions(self, df, features, n_clusters=6, fit_global=False):
     """
     Segments receipts into missions using a hybrid approach:
@@ -378,7 +483,8 @@ class FeatureEngineer:
           n_clusters=k_target, 
           init='k-means++', 
           random_state=self.random_state, 
-          n_init=10
+          n_init=10,
+          algorithm="lloyd" # Ensures stable results
         )
         clusters = self.kmeans.fit_predict(X_scaled)
       else:
@@ -386,17 +492,10 @@ class FeatureEngineer:
         clusters = self.kmeans.predict(X_scaled)
 
       # Map cluster IDs to consumer names
-      # Standard logic mapping based on project requirements
-      consumer_map = {
-        0: "Standard Mixed Trip",
-        1: "Quick Convenience",
-        2: "Weekly Stock-up",
-        3: "Daily Fresh Pick",
-        4: "Premium/Specialty Single-Item"
-      }
+      centroid_map = self._map_centroid_to_mission(self.kmeans.cluster_centers_, features)
       
       # Convert cluster IDs to names
-      mission_names = [consumer_map.get(c, "Standard Mixed Trip") for c in clusters]
+      mission_names = [centroid_map.get(c, "Standard Mixed Trip") for c in clusters]
       
       # Create a temporary mapping dataframe to avoid ShapeError
       # We use the unique receipt_id from the pending subset to align the names
