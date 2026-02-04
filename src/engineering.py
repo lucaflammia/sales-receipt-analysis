@@ -346,42 +346,45 @@ class FeatureEngineer:
     """
     Flags potential sweethearting with relaxed statistical thresholds.
     """
+    # Early Exit Guardrails
     if "cashier_id" not in df.columns or df.height < 2:
-      logger.warning("Log: Skipping Cashier Audit - cashier_id column missing or dataframe empty.")
+      logger.warning("Log: Skipping Cashier Audit - cashier_id column missing or insufficient data.")
       return df.with_columns([
         pl.lit(0).alias("cashier_anomaly_score"),
         pl.lit(0.0).alias("cashier_z_score")
       ])
 
-    # 1. Aggregate stats per cashier
+    # Aggregate stats per cashier
+    # Ensure discount_ratio exists and is clean before aggregation
     cashier_stats = df.group_by("cashier_id").agg([
-      pl.col("discount_ratio").mean().alias("avg_discount_rate"),
+      pl.col("discount_ratio").fill_null(0.0).mean().alias("avg_discount_rate"),
       pl.len().alias("transaction_count")
     ])
 
-    # DIAGNOSTIC LOG: This helps you see why alerts might be empty
     unique_cashiers = cashier_stats.height
-    logger.info(f"Audit Diagnostic: Found {unique_cashiers} unique cashiers. Max transactions by one cashier: {cashier_stats['transaction_count'].max()}")
+    logger.info(f"Audit Diagnostic: Processing {unique_cashiers} unique cashiers.")
 
-    # Relaxed threshold: Only 2 transactions needed to be eligible for audit
+    # Filter for Eligibility (relaxed to 2 transactions)
     eligible_stats = cashier_stats.filter(pl.col("transaction_count") >= 2)
 
     if eligible_stats.height < 2:
-      logger.warning("Log: Cashier Audit skipped - need at least 2 distinct cashiers with multiple transactions.")
+      logger.warning("Log: Cashier Audit skipped - need at least 2 distinct cashiers for peer comparison.")
       return df.with_columns([
         pl.lit(0).alias("cashier_anomaly_score"),
         pl.lit(0.0).alias("cashier_z_score")
       ])
 
-    # Statistical Deviation
+    # Statistical Baseline Calculation
     avg_rate = eligible_stats["avg_discount_rate"].mean()
     std_rate = eligible_stats["avg_discount_rate"].std()
     
-    # If everyone has the same discount rate, std is 0. Avoid division by zero.
-    if std_rate == 0 or std_rate is None:
+    # Robustness check: if std_rate is 0 or NaN, peer comparison is impossible
+    if std_rate is None or std_rate == 0:
+      logger.warning("Log: Zero variance in discount rates. All cashiers behaving identically.")
       std_rate = 0.001 
 
-    # Sensitivity: Lowered Z-Score threshold to 1.5 (Top ~7% of outliers)
+    # Z-Score Calculation & Flagging
+    # Threshold 1.5 aligns with your dashboard "SOSPETTO" label
     eligible_stats = eligible_stats.with_columns(
       ((pl.col("avg_discount_rate") - avg_rate) / std_rate).alias("cashier_z_score")
     ).with_columns(
@@ -391,14 +394,14 @@ class FeatureEngineer:
       .alias("cashier_anomaly_score")
     )
 
-    # Join back to main dataframe
+    # We join back to the original df to tag individual transactions
     return df.join(
       eligible_stats.select(["cashier_id", "cashier_z_score", "cashier_anomaly_score"]),
       on="cashier_id",
       how="left"
     ).with_columns([
       pl.col("cashier_z_score").fill_null(0.0),
-      pl.col("cashier_anomaly_score").fill_null(0)
+      pl.col("cashier_anomaly_score").fill_null(0).cast(pl.Int8)
     ])
 
   def detect_produce_weighing_errors(self, df: pl.DataFrame):

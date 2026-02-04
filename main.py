@@ -311,34 +311,36 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
     # ----------------------------------
 
     # ANOMALY DETECTION (Cassa & Ortofrutta)
-    # Sweethearting & Cashier Performance
-    if "cashier_id" in df.columns:
-      logger.info("Running Cashier Integrity Audit (Sweethearting)...")
-      df = feature_engineer.detect_cashier_anomalies(df)
 
-    # Produce Weighing Errors (Ortofrutta)
-    # We pass the raw line-item data to check price/weight ratios
+    # 1. Produce Weighing Errors (Ortofrutta)
+    # Pass raw line-item data to check price/weight ratios using MAD
     logger.info("Running Produce (Ortofrutta) Weight Audit...")
     produce_anomalies = feature_engineer.detect_produce_weighing_errors(raw_data_lazy.collect())
 
+    # Cashier Integrity Audit (Sweethearting)
     logger.info("Running Cashier Integrity Audit (Sweethearting)...")
 
-    # Ensure cashier_id exists
+    # Ensure cashier_id exists before processing
     if "cashier_id" not in df.columns:
       logger.warning("Log: cashier_id not found in aggregated features, forcing N/A")
       df = df.with_columns(pl.lit("N/A").alias("cashier_id"))
-    
+
+    # Run the anomaly detection (Z-Score & Isolation Forest)
     df = feature_engineer.detect_cashier_anomalies(df)
-    
-    # Filter for the report: Score -1 is the outlier flag, Z > 1.5 is the visibility threshold
+
+    # Filter for Report (Registro Audit)
+    # Score -1 (outlier flag) or Z > 1.5 (visibility threshold)
     cashier_alerts = df.select([
-      "cashier_id", "cashier_anomaly_score", "cashier_z_score"
+      "cashier_id", 
+      "cashier_anomaly_score", 
+      "cashier_z_score"
     ]).unique().filter(
       (pl.col("cashier_anomaly_score") == -1) | (pl.col("cashier_z_score") > 1.5)
     )
-    
+
+    # Logging results
     if cashier_alerts.is_empty():
-      logger.info("Log: Still no significant cashier anomalies even with relaxed thresholds.")
+      logger.info("Log: No significant cashier anomalies detected.")
     else:
       logger.info(f"Log: ALERT! {cashier_alerts.height} cashiers flagged for review.")
 
