@@ -81,6 +81,23 @@
         .kpi-val { font-size: 28px; font-weight: 700; color: #fff; margin-top: 5px; }
         .kpi-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
 
+        .info-box {
+            background: rgba(122, 162, 255, 0.05);
+            border-left: 4px solid var(--primary);
+            padding: 15px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            line-height: 1.5;
+            grid-column: span 12;
+        }
+        .method-tag {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--primary);
+            background: rgba(122, 162, 255, 0.1);
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th { text-align: left; font-size: 11px; color: var(--muted); padding: 15px; border-bottom: 1px solid var(--line); text-transform: uppercase; }
         td { padding: 12px 15px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 14px; }
@@ -169,6 +186,13 @@
 
     <div id="audit-tab" class="tab-content">
         <div class="grid">
+            <div class="info-box">
+                <strong>💡 Nota Tecnica Anomalia:</strong><br>
+                Il sistema identifica potenziali perdite di margine tramite:<br>
+                1. <span class="method-tag">Z-Score</span>: Rileva il <b>Sweethearting</b> confrontando il tasso di sconto (`discount_ratio`) del singolo operatore con la media dei peer.<br>
+                2. <span class="method-tag">MAD (Median Absolute Deviation)</span>: Rileva <b>Pesi Errati</b> nell'ortofrutta isolando i rapporti Prezzo/Peso statisticamente incoerenti.
+            </div>
+
             <div class="card c-6">
                 <h2 style="color: var(--primary); margin-top:0">👤 Audit Operatori (Sweethearting)</h2>
                 <p style="color:var(--muted); font-size:13px">Analisi statistica degli sconti applicati dai cassieri (Z-Score > 1.5).</p>
@@ -210,6 +234,11 @@
     const fmtEur = (v) => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(v);
     const fmtNum = (v) => new Intl.NumberFormat('it-IT').format(v);
 
+    const monthNames = [
+        "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
+        "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"
+    ];
+
     document.addEventListener("DOMContentLoaded", () => {
         renderMissionData();
         renderAuditData();
@@ -226,24 +255,19 @@
     function renderMissionData() {
         const meta = dashboardData.metadata;
         const missionTab = dashboardData.tabs.missioni.data;
-        const monthNames = [
-          "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
-          "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"
-        ];
 
         const parsePeriod = (periodStr) => {
-          // Expected format "YYYY-MM"
-          const [year, month] = periodStr.split('-');
-          return `${monthNames[parseInt(month) - 1]} ${year}`;
+            const [year, month] = periodStr.split('-');
+            return `${monthNames[parseInt(month) - 1]} ${year}`;
         };
 
         const insights = missionTab.monthly_insights;
-        let periodRange = meta.periodo; // Fallback
+        let periodRange = meta.periodo;
 
         if (insights && insights.length > 0) {
-          const start = parsePeriod(insights[0].period);
-          const end = parsePeriod(insights[insights.length - 1].period);
-          periodRange = start === end ? start : `${start} - ${end}`;
+            const start = parsePeriod(insights[0].period);
+            const end = parsePeriod(insights[insights.length - 1].period);
+            periodRange = start === end ? start : `${start} - ${end}`;
         }
 
         document.getElementById('meta-subtitle').innerText = `Analisi Periodo: ${periodRange} • Generato: ${meta.data_generazione}`;
@@ -252,26 +276,20 @@
 
         const tableBody = document.getElementById('mission-table-body');
         let totalRev = 0, totalRec = 0;
-
         const barTraces = [];
         
-        // Data containers for Sunburst
-        const sunIds = [];
-        const sunLabels = [];
-        const sunParents = [];
-        const sunValues = [];
+        const sunIds = [], sunLabels = [], sunParents = [], sunValues = [];
 
         missionTab.monthly_insights.forEach((monthObj) => {
-            // Table Header
+            const prettyMonth = parsePeriod(monthObj.period);
             const headerTr = document.createElement('tr');
-            headerTr.innerHTML = `<td colspan="6" class="month-group-header">${monthObj.period}</td>`;
+            headerTr.innerHTML = `<td colspan="6" class="month-group-header">${prettyMonth}</td>`;
             tableBody.appendChild(headerTr);
 
-            // Level 0: Period
             sunIds.push(monthObj.period);
-            sunLabels.push(monthObj.period);
+            sunLabels.push(prettyMonth);
             sunParents.push("");
-            sunValues.push(0); // Will be calculated by children
+            sunValues.push(0); 
 
             const monthMissions = [];
             const monthRevenues = [];
@@ -285,7 +303,6 @@
                 monthMissions.push(row.shopping_mission);
                 monthRevenues.push(row.total_mission_revenue);
                 
-                // Level 1: Mission types (scoped by period to avoid merging)
                 sunIds.push(`${monthObj.period}_${row.shopping_mission}`);
                 sunLabels.push(row.shopping_mission);
                 sunParents.push(monthObj.period);
@@ -303,14 +320,13 @@
                 tableBody.appendChild(tr);
             });
 
-            // Update parent value with month total
             const pIdx = sunIds.indexOf(monthObj.period);
             sunValues[pIdx] = monthTotalRev;
 
             barTraces.push({
                 x: monthMissions,
                 y: monthRevenues,
-                name: monthObj.period,
+                name: prettyMonth,
                 type: 'bar',
                 marker: { opacity: 0.8 }
             });
@@ -320,7 +336,6 @@
         document.getElementById('total-revenue').innerText = fmtEur(totalRev);
         document.getElementById('avg-ticket').innerText = fmtEur(totalRev / totalRec);
 
-        // Render Sunburst with specific IDs to prevent overlap between 2024-11 and 2024-12
         Plotly.newPlot('mission-donut-chart', [{
             type: "sunburst",
             ids: sunIds,
@@ -356,14 +371,14 @@
         let cashierHtml = '', produceHtml = '', produceAlertsCount = 0;
 
         (auditData.cashier_anomalies || []).forEach(period => {
-            cashierHtml += `<tr style="background:rgba(122,162,255,0.08)"><td colspan="3"><b style="color:var(--primary)">📅 Mese: ${period.period}</b></td></tr>`;
+            cashierHtml += `<tr style="background:rgba(122,162,255,0.08)"><td colspan="3"><b style="color:var(--primary)">📅 Periodo Audit: ${period.period}</b></td></tr>`;
             if (period.details && period.details.length > 0) {
                 period.details.forEach(c => {
                     const sevColor = c.cashier_z_score > 3 ? 'var(--bad)' : 'var(--warn)';
                     const sevLabel = c.cashier_z_score > 3 ? 'CRITICO' : 'SOSPETTO';
                     cashierHtml += `
                         <tr>
-                            <td><b>ID Operatore: ${c.cashier_id}</b></td>
+                            <td><b>Operatore: ${c.cashier_id}</b></td>
                             <td class="num" style="color:${sevColor}; font-weight:bold">${c.cashier_z_score.toFixed(2)}</td>
                             <td><span class="pill-count" style="background:${sevColor}22; color:${sevColor}; border:1px solid ${sevColor}44">${sevLabel}</span></td>
                         </tr>`;
@@ -374,7 +389,7 @@
         });
 
         (auditData.produce_alerts || []).forEach(period => {
-            produceHtml += `<tr style="background:rgba(255,92,119,0.08)"><td colspan="4"><b style="color:var(--bad)">📅 Mese: ${period.period}</b></td></tr>`;
+            produceHtml += `<tr style="background:rgba(255,92,119,0.08)"><td colspan="4"><b style="color:var(--bad)">📅 Periodo Audit: ${period.period}</b></td></tr>`;
             period.details.forEach(p => {
                 produceAlertsCount++;
                 produceHtml += `
