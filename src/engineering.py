@@ -1,10 +1,6 @@
 import polars as pl
 import pandas as pd
 import logging
-import os
-import itertools
-import matplotlib.pyplot as plt
-import seaborn as sns
 import numpy as np
 from sklearn.ensemble import IsolationForest, RandomForestRegressor
 from sklearn.linear_model import LassoCV
@@ -236,113 +232,7 @@ class FeatureEngineer:
     scores = model.decision_function(data_for_model)
     return eager_df.with_columns(pl.Series(name="anomaly_score", values=scores))
 
-  def plot_anomalies(self, df, features=None, path="plots/anomalies.png"):
-    """
-    Dynamically generates anomaly plots for the most relevant features.
-    Prioritizes top features if importance scores are provided.
-    """
-    os.makedirs("plots", exist_ok=True)
-
-    # Prepare Data
-    eager_df = self._ensure_eager(df)
-    if "anomaly_score" not in eager_df.columns:
-      logging.warning("No 'anomaly_score' column found. Skipping plot.")
-      return
-
-    # Sample for performance, but ensure we have enough data
-    sample_size = min(len(eager_df), 5000)
-    pdf = eager_df.sample(n=sample_size, seed=self.random_state).to_pandas()
-
-    # Logic to determine "Most Relevant" features
-    feat_scores = None
-    if isinstance(features, dict):
-      # Sort features by importance score descending and take top 4
-      sorted_feats = sorted(features.items(), key=lambda x: x[1], reverse=True)
-      plot_cols = [f[0] for f in sorted_feats[:4]]
-      feat_scores = {f[0]: f[1] for f in sorted_feats[:4]}
-    elif isinstance(features, list):
-      plot_cols = features[:4] # Cap at top 4 for readability
-    else:
-      # Fallback: find numerical columns that aren't the score or ID
-      plot_cols = [c for c in pdf.select_dtypes(include=['number']).columns 
-                    if c not in ["anomaly_score", "receipt_id", "store_numeric"]][:4]
-
-    num_features = len(plot_cols)
-    if num_features < 2:
-      logging.warning("Not enough features selected for plotting.")
-      return
-
-    # 3D Plotting (The "Money Shot")
-    if num_features >= 3:
-      path_3d = path.replace(".png", "_3d.png")
-      fig = plt.figure(figsize=(10, 8))
-      ax = fig.add_subplot(111, projection="3d")
-
-      # Use the top 3 features
-      scatter = ax.scatter(
-        pdf[plot_cols[0]],
-        pdf[plot_cols[1]],
-        pdf[plot_cols[2]],
-        c=pdf["anomaly_score"],
-        cmap="rocket",
-        alpha=0.6,
-        edgecolors="w",
-        linewidth=0.5
-      )
-
-      # Labels with Importance %
-      labels = []
-      for c in plot_cols[:3]:
-        label = c.replace("_", " ").title()
-        if feat_scores:
-          label += f" ({feat_scores[c]:.1f}%)"
-        labels.append(label)
-
-      ax.set_xlabel(labels[0])
-      ax.set_ylabel(labels[1])
-      ax.set_zlabel(labels[2])
-      
-      plt.title("3D Anomaly Distribution (Top Consensus Features)")
-      fig.colorbar(scatter, ax=ax, label="Anomaly Score", pad=0.1)
-      plt.savefig(path_3d, dpi=150, bbox_inches='tight')
-      plt.close()
-      logging.info(f"✨ Top 3 features 3D plot saved: {path_3d}")
-
-    # Optimized 2.D Pair-wise Plotting
-    # We only plot the most significant combinations (Max 3)
-    combinations = list(itertools.combinations(plot_cols, 2))[:3]
-    num_plots = len(combinations)
-
-    fig, axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 5))
-    if num_plots == 1:
-      axes = [axes]
-
-    for i, (feat_x, feat_y) in enumerate(combinations):
-      sns.scatterplot(
-        data=pdf,
-        x=feat_x,
-        y=feat_y,
-        hue="anomaly_score",
-        palette="rocket",
-        size="anomaly_score",
-        sizes=(10, 100),
-        alpha=0.7,
-        ax=axes[i]
-      )
-      
-      # Enhanced titling
-      title = f"{feat_y.replace('_', ' ').title()}\nvs {feat_x.replace('_', ' ').title()}"
-      axes[i].set_title(title, fontweight='bold')
-      axes[i].set_xlabel(feat_x.replace("_", " ").title())
-      axes[i].set_ylabel(feat_y.replace("_", " ").title())
-      axes[i].grid(True, linestyle='--', alpha=0.5)
-
-    plt.tight_layout()
-    plt.savefig(path, dpi=150)
-    plt.close()
-    logging.info(f"📊 Top 2D pairwise plots saved: {path}")
-
-  def detect_cashier_anomalies(self, df: pl.DataFrame):
+  def detect_cashier_sweethearting_anomalies(self, df: pl.DataFrame):
     """
     Flags potential sweethearting with relaxed statistical thresholds.
     """
@@ -350,8 +240,8 @@ class FeatureEngineer:
     if "cashier_id" not in df.columns or df.height < 2:
       logger.warning("Log: Skipping Cashier Audit - cashier_id column missing or insufficient data.")
       return df.with_columns([
-        pl.lit(0).alias("cashier_anomaly_score"),
-        pl.lit(0.0).alias("cashier_z_score")
+        pl.lit(0).alias("cashier_sweethearting_anomaly_score"),
+        pl.lit(0.0).alias("cashier_sweethearting_z_score")
       ])
 
     # Aggregate stats per cashier
@@ -370,8 +260,8 @@ class FeatureEngineer:
     if eligible_stats.height < 2:
       logger.warning("Log: Cashier Audit skipped - need at least 2 distinct cashiers for peer comparison.")
       return df.with_columns([
-        pl.lit(0).alias("cashier_anomaly_score"),
-        pl.lit(0.0).alias("cashier_z_score")
+        pl.lit(0).alias("cashier_sweethearting_anomaly_score"),
+        pl.lit(0.0).alias("cashier_sweethearting_z_score")
       ])
 
     # Statistical Baseline Calculation
@@ -386,22 +276,22 @@ class FeatureEngineer:
     # Z-Score Calculation & Flagging
     # Threshold 1.5 aligns with your dashboard "SOSPETTO" label
     eligible_stats = eligible_stats.with_columns(
-      ((pl.col("avg_discount_rate") - avg_rate) / std_rate).alias("cashier_z_score")
+      ((pl.col("avg_discount_rate") - avg_rate) / std_rate).alias("cashier_sweethearting_z_score")
     ).with_columns(
-      pl.when(pl.col("cashier_z_score") > 1.5)
+      pl.when(pl.col("cashier_sweethearting_z_score") > 1.5)
       .then(pl.lit(-1))
       .otherwise(pl.lit(0))
-      .alias("cashier_anomaly_score")
+      .alias("cashier_sweethearting_anomaly_score")
     )
 
     # We join back to the original df to tag individual transactions
     return df.join(
-      eligible_stats.select(["cashier_id", "cashier_z_score", "cashier_anomaly_score"]),
+      eligible_stats.select(["cashier_id", "cashier_sweethearting_z_score", "cashier_sweethearting_anomaly_score"]),
       on="cashier_id",
       how="left"
     ).with_columns([
-      pl.col("cashier_z_score").fill_null(0.0),
-      pl.col("cashier_anomaly_score").fill_null(0).cast(pl.Int8)
+      pl.col("cashier_sweethearting_z_score").fill_null(0.0),
+      pl.col("cashier_sweethearting_anomaly_score").fill_null(0).cast(pl.Int8)
     ])
 
   def detect_produce_weighing_errors(self, df: pl.DataFrame):
@@ -556,8 +446,8 @@ class FeatureEngineer:
     limit = min(max_k, n_samples - 1)
     
     if limit < 2:
-        logger.warning(f"Insufficient samples ({n_samples}) for Elbow Method. Returning default K=6.")
-        return 6 
+      logger.warning(f"Insufficient samples ({n_samples}) for Elbow Method. Returning default K=6.")
+      return 6 
     
     wcss = []
 
@@ -570,47 +460,87 @@ class FeatureEngineer:
     # For Missione Spesa, we return 6 as the target mission count
     return 6
 
-  def plot_mission_impact(self, df_pd, path, title="Impatto Missioni di Spesa"):
+  def extract_cashier_fingerprint(self, df_raw: pl.DataFrame) -> pl.DataFrame:
     """
-    Generates a dual-axis chart for Business Stakeholders:
-    - Bars: Total Revenue (Fatturato)
-    - Line: Traffic Share (Incidenza Traffico %)
+    Creates a behavioral 'DNA' for each cashier based on transaction patterns.
     """
-    plt.style.use('seaborn-v0_8-muted')
-    fig, ax1 = plt.subplots(figsize=(12, 7))
-
-    # Axis 1: Revenue (Bars)
-    sns.barplot(
-      data=df_pd, 
-      x="shopping_mission", 
-      y="total_mission_revenue", 
-      ax=ax1, 
-      hue="shopping_mission", 
-      palette="viridis", 
-      legend=False
-    )
-    ax1.set_ylabel("Fatturato Totale (€)", fontweight='bold')
-    ax1.set_xlabel("Missione di Spesa", fontweight='bold')
-    plt.xticks(rotation=15, ha='right')
-
-    # Axis 2: Traffic Share (Line)
-    ax2 = ax1.twinx()
-    sns.lineplot(
-      data=df_pd, 
-      x="shopping_mission", 
-      y="traffic_share_pct", 
-      ax=ax2, 
-      color="#C62828", 
-      marker="o", 
-      linewidth=2.5,
-      label="Quota Traffico %"
-    )
-    ax2.set_ylabel("Incidenza sul Traffico (%)", fontweight='bold', color="#C62828")
-    ax2.set_ylim(0, df_pd["traffic_share_pct"].max() * 1.2)
-
-    plt.title(title, fontsize=14, fontweight='bold', pad=20)
-    ax1.grid(axis='y', linestyle='--', alpha=0.4)
+    logger.info("Generating behavioral fingerprints for cashiers...")
     
-    plt.tight_layout()
-    plt.savefig(path, dpi=200)
-    plt.close()
+    receipt_metrics = df_raw.group_by(["cashier_id", "receipt_id"]).agg([
+      pl.col("line_total").sum().alias("receipt_value"),
+      pl.col("is_item_void").sum().alias("void_items_count"),
+      pl.col("is_abort").any().cast(pl.Int8).alias("was_aborted"),
+      pl.col("payment_method_code").first().alias("pay_code")
+    ])
+    logger.info(f"Number of receipt metrics {receipt_metrics.height}")
+
+    fingerprint = receipt_metrics.group_by("cashier_id").agg([
+      pl.len().alias("total_transactions"),
+      pl.col("receipt_value").mean().alias("avg_transaction_value"),
+      pl.col("void_items_count").mean().alias("void_rate_per_receipt"),
+      pl.col("was_aborted").mean().alias("abort_rate"),
+      # Cash Reliance Ratio: Proportion of transactions paid in cash (pay_code "01")
+      ((pl.col("pay_code") == "01").sum().cast(pl.Float64) / pl.len()).alias("cash_reliance_ratio")
+    ]).filter(pl.col("total_transactions") > 10)
+
+    logging.info(f"fingerprint {fingerprint.height}")
+
+    return fingerprint
+
+  def detect_behavioral_anomalies(self, fp_df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Detects cashiers whose behavior deviates significantly from the store average.
+    """
+    if fp_df.is_empty():
+      return fp_df
+
+    # Features to analyze
+    features = ["avg_transaction_value", "void_rate_per_receipt", "abort_rate", "cash_reliance_ratio"]
+    
+    # Prepare for ML
+    data = fp_df.select(features).to_pandas()
+    data = self._sanitize_input(data)
+    
+    # Isolation Forest for Unsupervised Outlier Detection
+    iso = IsolationForest(contamination=0.05, random_state=self.random_state)
+    fp_df = fp_df.with_columns([
+      pl.Series(name="iso_outlier_score", values=iso.fit_predict(data))
+    ])
+
+    # 2. Weighted Z-Score
+    # We prioritize voids and cash reliance as they are higher leakage indicators
+    weights = {
+      "avg_transaction_value": 0.1,
+      "void_rate_per_receipt": 0.4, # Weighted higher
+      "abort_rate": 0.2,
+      "cash_reliance_ratio": 0.3  # Weighted higher
+    }
+
+    # Statistical Z-Score (Distance from Mean)
+    # We calculate a composite risk score based on how many STDs they are from average
+    risk_expr = []
+    for feat, weight in weights.items():
+      mean = fp_df[feat].mean()
+      std = fp_df[feat].std()
+      # Calculate Z-score and multiply by weight
+      z_score = ((pl.col(feat) - mean) / (std + 1e-6)).abs()
+      risk_expr.append(z_score * weight)
+
+    fp_df = fp_df.with_columns([
+      (sum(risk_expr)).alias("risk_score")
+    ])
+
+    return fp_df.sort("risk_score", descending=True)
+
+  def run_margin_leakage_radar(self, df_raw: pl.DataFrame) -> pl.DataFrame:
+    """
+    Calculates potential revenue loss (leakage) per cashier.
+    """
+    return df_raw.group_by("cashier_id").agg([
+      pl.col("total_discounts").sum().alias("total_markdowns"),
+      pl.col("is_item_void").sum().alias("total_voids"),
+      pl.col("line_total").sum().alias("captured_revenue")
+    ]).with_columns([
+      (pl.col("total_markdowns") / pl.col("captured_revenue")).alias("leakage_pct")
+    ])
+    
