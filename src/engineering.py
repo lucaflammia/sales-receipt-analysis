@@ -60,17 +60,20 @@ class FeatureEngineer:
     ])
 
     # Freshness Logic
+    # Ensure is_fresh is strictly Boolean
     lf = lf.with_columns((pl.col("weight") > 0).alias("is_fresh"))
 
     agg_lf = lf.group_by("receipt_id").agg([
       pl.col("line_total").sum().alias("basket_value"),
       pl.len().alias("basket_size"),
-      pl.col("is_fresh").any().cast(pl.Int8).alias("has_fresh_produce"),
+      pl.col("is_fresh").any().alias("has_fresh_produce"),
       pl.col("is_discounted").sum().alias("discounted_item_count"),
+      # Ensure the mask is boolean and handles the aggregation correctly
       pl.col("weight").filter(pl.col("is_fresh")).sum().alias("fresh_weight_sum"),
       pl.col("weight").sum().alias("total_weight"),
       pl.col("is_item_void").sum().alias("total_voids"),
-      pl.col("line_total").filter(pl.col("is_item_void")).sum().abs().alias("void_value"),
+      # Use cast(pl.Boolean) to be absolutely safe if input types are messy
+      pl.col("line_total").filter(pl.col("is_item_void").cast(pl.Boolean)).sum().abs().alias("void_value"),
       pl.col("line_total").filter(pl.col("is_fresh")).sum().alias("fresh_value_sum"),
       pl.col("avg_unit_price").mean().alias("avg_basket_unit_price"),
       pl.col("price_delta").mean().alias("avg_price_delta_per_basket"),
@@ -288,6 +291,7 @@ class FeatureEngineer:
       pl.when(pl.col("cashier_sweethearting_z_score") > 1.5)
       .then(pl.lit(-1))
       .otherwise(pl.lit(0))
+      .cast(pl.Int8)
       .alias("cashier_sweethearting_anomaly_score")
     )
 
@@ -547,7 +551,7 @@ class FeatureEngineer:
     ]).with_columns([
       (pl.col("total_markdowns") / pl.col("captured_revenue")).alias("leakage_pct")
     ])
-    
+
   def validate_business_metrics(self, df: pl.DataFrame):
     """
     Checks for suspiciously empty business metrics.
