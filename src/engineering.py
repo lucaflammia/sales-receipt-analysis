@@ -58,7 +58,7 @@ class FeatureEngineer:
       pl.when((pl.col("hour_of_day").is_between(12, 14)) | (pl.col("hour_of_day").is_between(18, 20)))
         .then(pl.lit(1)).otherwise(pl.lit(0)).alias("peak_hour_pressure_numeric")
     ])
-    
+
     # Freshness Logic
     lf = lf.with_columns((pl.col("weight") > 0).alias("is_fresh"))
 
@@ -69,6 +69,8 @@ class FeatureEngineer:
       pl.col("is_discounted").sum().alias("discounted_item_count"),
       pl.col("weight").filter(pl.col("is_fresh")).sum().alias("fresh_weight_sum"),
       pl.col("weight").sum().alias("total_weight"),
+      pl.col("is_item_void").sum().alias("total_voids"),
+      pl.col("line_total").filter(pl.col("is_item_void")).sum().abs().alias("void_value"),
       pl.col("line_total").filter(pl.col("is_fresh")).sum().alias("fresh_value_sum"),
       pl.col("avg_unit_price").mean().alias("avg_basket_unit_price"),
       pl.col("price_delta").mean().alias("avg_price_delta_per_basket"),
@@ -83,9 +85,12 @@ class FeatureEngineer:
     agg_lf = agg_lf.with_columns([
       (pl.col("basket_size") == 1).cast(pl.Int8).alias("is_single_item_flag"),
       (pl.col("basket_value") / pl.col("basket_size")).alias("basket_value_per_item"),
+      (pl.col("total_voids") / pl.col("basket_size")).fill_nan(0).alias("void_rate_per_receipt"),
       (pl.col("discounted_item_count") / pl.col("basket_size")).fill_nan(0).alias("discount_ratio"),
       (pl.col("fresh_weight_sum") / pl.col("total_weight")).fill_nan(0).alias("freshness_weight_ratio"),
-      (pl.col("fresh_value_sum") / pl.col("basket_value")).fill_nan(0).alias("freshness_value_ratio")
+      (pl.col("fresh_value_sum") / pl.col("basket_value")).fill_nan(0).alias("freshness_value_ratio"),
+      # Leakage Evaluation: (Void Lines Value / Potential Gross Value)
+      (pl.col("void_value") / (pl.col("basket_value") + pl.col("void_value") + 1e-6)).fill_nan(0).alias("leakage_pct")
     ]).with_columns([
       # Guardrails for potential Infinity or NaN from divisions
       pl.col("basket_value_per_item").fill_nan(0).fill_null(0),
@@ -472,7 +477,6 @@ class FeatureEngineer:
       pl.col("is_abort").any().cast(pl.Int8).alias("was_aborted"),
       pl.col("payment_method_code").first().alias("pay_code")
     ])
-    logger.info(f"Number of receipt metrics {receipt_metrics.height}")
 
     fingerprint = receipt_metrics.group_by("cashier_id").agg([
       pl.len().alias("total_transactions"),
@@ -482,8 +486,6 @@ class FeatureEngineer:
       # Cash Reliance Ratio: Proportion of transactions paid in cash (pay_code "01")
       ((pl.col("pay_code") == "01").sum().cast(pl.Float64) / pl.len()).alias("cash_reliance_ratio")
     ]).filter(pl.col("total_transactions") > 10)
-
-    logging.info(f"fingerprint {fingerprint.height}")
 
     return fingerprint
 
@@ -507,7 +509,7 @@ class FeatureEngineer:
       pl.Series(name="iso_outlier_score", values=iso.fit_predict(data))
     ])
 
-    # 2. Weighted Z-Score
+    # Weighted Z-Score
     # We prioritize voids and cash reliance as they are higher leakage indicators
     weights = {
       "avg_transaction_value": 0.1,
@@ -544,3 +546,76 @@ class FeatureEngineer:
       (pl.col("total_markdowns") / pl.col("captured_revenue")).alias("leakage_pct")
     ])
     
+  def validate_business_metrics(self, df: pl.DataFrame):
+    """
+    Checks for suspiciously empty or zeroed business metrics in the final output.
+    Now includes Freshness metrics critical for Shopping Mission clustering.
+    """
+    
+    # Comprehensive mapping including the new Freshness indicators
+    critical_metrics = {
+      "void_rate_per_receipt": "Tasso Storni",
+      "total_voids": "Totale Articoli Stornati",
+      "discount_ratio": "Indice Sconti",
+      "basket_value": "Fatturato (Basket Value)",
+      "freshness_weight_ratio": "Incidenza Peso Freschissimi",
+      "freshness_value_ratio": "Incidenza Valore Freschissimi",
+      "leakage_pct": "Percentuale Perdita (Leakage)"
+    }
+    
+    logger.info("Starting Business Metric Integrity Validation...")
+    
+    # We ensure we are working with an Eager DataFrame for validation
+    df_eager = self._ensure_eager(df)
+    
+    if df_eager.is_empty():
+      logger.error("VALIDATION FAILED: DataFrame is empty. No metrics to validate.")
+      return
+
+    for col, business_name in critical_metrics.items():
+      if col in df_eager.columns:
+        # Stats collection
+        stats = df_eager.select([
+          pl.col(col).sum().alias("total"),
+          pl.col(col).mean().alias("avg"),
+          pl.col(col).max().alias("max")
+        ])
+        
+        total_val = stats["total"][0] or 0
+        avg_val = stats["avg"][0] or 0
+        max_val = stats["max"][0] or 0
+        
+        # Global Failure Check
+        if total_val == 0:
+          logger.critical(
+            f"DATA INTEGRITY ALERT: Metric '{col}' ({business_name}) is 0.0 for ALL records. "
+            f"This will break clustering for Shopping Missions."
+          )
+        
+        # Freshness Specific Logic
+        # Produce/Fresh items usually exist in at least 10-20% of baskets.
+        # If the average is extremely low, the 'is_fresh' (weight > 0) logic might be failing.
+        elif "freshness" in col and avg_val < 0.01:
+          logger.warning(
+            f"LOW FRESHNESS ALERT: '{business_name}' average is only {avg_val:.4%}. "
+            f"Verify if 'weight' column in source files contains valid non-zero data."
+          )
+
+        # 3. Floating Point/Small Value Warning
+        elif max_val < 0.0001 and total_val != 0:
+          logger.warning(
+            f"SUSPICIOUS DATA: Metric '{col}' ({business_name}) has non-zero total but max value is near-zero ({max_val})."
+          )
+        
+        # 4. Success Log
+        else:
+          logger.info(f"Metric '{col}' ({business_name}) validated -> [Avg: {avg_val:.4f} | Max: {max_val:.4f}]")
+      else:
+        logger.error(f"SCHEMA ERROR: Required column '{col}' is missing from the DataFrame.")
+
+    # Cashier Identity Consistency
+    if "cashier_id" in df_eager.columns:
+      unique_cashiers = df_eager["cashier_id"].n_unique()
+      logger.info(f"Identity Check: {unique_cashiers} unique cashiers found in current partition.")
+      if unique_cashiers <= 1:
+        logger.warning("Log: Grouping check failed or only one cashier_id found.")

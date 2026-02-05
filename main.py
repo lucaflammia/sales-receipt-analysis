@@ -5,17 +5,14 @@ import time
 import os
 import argparse
 import datetime
-import webbrowser
-import http.server
-import socketserver
 import glob
 import json
 from src.ingestion import load_config
 from src.engineering import FeatureEngineer
 
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+  level=logging.INFO,
+  format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
@@ -33,121 +30,6 @@ MISSION_MAP = {
   "Quick Convenience": "Convenienza Rapida",
   "Daily Fresh Pick": "Fresco Quotidiano"
 }
-
-class ReportGenerator:
-  def __init__(self, base_dir="/workspaces/sales-receipt-analysis"):
-    self.base_dir = base_dir
-    self.html_out_dir = os.path.join(base_dir, "html_reports")
-    self.template_dir = os.path.join(base_dir, "templates")
-    self.reports_dir = os.path.join(base_dir, "reports")
-
-    for directory in [self.html_out_dir, self.reports_dir]:
-      os.makedirs(directory, exist_ok=True)
-
-  def _serve_report(self, filename, start_port=8000):
-    """Starts a local server and keeps it alive to serve all dashboard assets."""
-    os.chdir(self.html_out_dir)
-    handler = http.server.SimpleHTTPRequestHandler
-    
-    port = start_port
-    while port < 8010:
-      try:
-        socketserver.TCPServer.allow_reuse_address = True
-        with socketserver.TCPServer(("", port), handler) as httpd:
-          url = f"http://localhost:{port}/{filename}"
-          print("\n" + "--- REPORT READY (Missione Spesa) ---".center(50))
-          print(f"URL: {url}")
-          print("ACTION: Ctrl+Click to open. Press Ctrl+C in terminal to stop server.")
-          print("-" * 50 + "\n")
-          
-          webbrowser.open(url)
-          
-          # Instead of handle_request(), use serve_forever() 
-          # so the browser can fetch the HTML, CSS, and JSON data fully.
-          try:
-            httpd.serve_forever()
-          except KeyboardInterrupt:
-            print("\nStopping server...")
-            httpd.shutdown()
-        break
-      except OSError:
-        port += 1
-
-  def generate_unified_dashboard(self, year, start_month, end_month=None):
-    """
-    Generates a single, standalone HTML dashboard with two tabs:
-    1. Missione Spesa (Shopping Missions)
-    2. Anomalie Ortofrutta (Produce Anomalies)
-    """
-    m_range = f"M{start_month}" if not end_month or start_month == end_month else f"M{start_month}-M{end_month}"
-    
-    # Paths for localized data sources
-    mission_json_path = os.path.join(self.reports_dir, f"Mission_Insights_{year}.json")
-    anomaly_json_path = os.path.join(self.reports_dir, f"Anomaly_Data_{year}.json") 
-    master_tpl_path = os.path.join(self.template_dir, "dashboard_template.html")
-    
-    output_filename = f"unified_dashboard_{year}_{m_range}.html"
-    output_path = os.path.join(self.html_out_dir, output_filename)
-
-    try:
-      # Initialize Combined Data Structure
-      combined_data = {
-        "metadata": {
-          "anno": year, 
-          "periodo": m_range, 
-          "data_generazione": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
-          "titolo_dashboard": "Dashboard Missione Spesa & Behavioral Radar"
-        },
-        "tabs": {
-          "missioni": {
-            "label": "Risultati Missione Spesa",
-            "data": {}
-          },
-          "comportamento_cassa": {
-            "label": "Radar Comportamentale Cassieri",
-            "data": {}
-          },
-          "anomalie": {
-            "label": "Anomalie Prodotti Ortofrutta",
-            "data": {}
-          }
-        }
-      }
-      
-      # Load and Map Mission Data
-      if os.path.exists(mission_json_path):
-        with open(mission_json_path, "r", encoding="utf-8") as f:
-          # We store this under the Italian key for the dashboard tab
-          combined_data["tabs"]["missioni"]["data"] = json.load(f)
-      
-      # Load and Map Anomaly Data
-      if os.path.exists(anomaly_json_path):
-        with open(anomaly_json_path, "r", encoding="utf-8") as f:
-          combined_data["tabs"]["anomalie"]["data"] = json.load(f)
-
-      # Inject into HTML Template
-      if not os.path.exists(master_tpl_path):
-        raise FileNotFoundError(f"Master template not found at {master_tpl_path}")
-
-      with open(master_tpl_path, "r", encoding="utf-8") as f:
-        template_content = f.read()
-
-      # Serialization for the JS frontend
-      json_payload = json.dumps(combined_data, ensure_ascii=False)
-      final_html = template_content.replace("{{DASHBOARD_DATA_JSON}}", json_payload)
-      
-      # Save Final Dashboard
-      with open(output_path, "w", encoding="utf-8") as f:
-        f.write(final_html)
-
-      # English log as per instructions
-      logger.info(f"SUCCESS: Unified two-tab dashboard generated: {output_filename}")
-      
-      # Serve/Open the report
-      self._serve_report(output_filename)
-
-    except Exception as e:
-      logger.error(f"ERROR: Failed to generate unified dashboard: {e}", exc_info=True)
 
 def log_resource_usage(stage: str):
   process = psutil.Process(os.getpid())
@@ -249,6 +131,9 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
     # Feature Aggregation
     df_lazy = feature_engineer.extract_canonical_features(raw_data_lazy)
     df = df_lazy.collect()
+
+    # Check validation of metrics
+    feature_engineer.validate_business_metrics(df)
 
     # Clean data for ALL subsequent ML steps
     mission_features = ["basket_size", "basket_value_per_item", "freshness_weight_ratio"]
@@ -421,7 +306,6 @@ def main():
 
   start_time = time.time()
   config = load_config()
-  report_gen = ReportGenerator()
   
   # Storage for the Global Summary
   global_insights = []
@@ -627,13 +511,6 @@ def main():
     with open(json_behavioral_path, 'w', encoding='utf-8') as f:
       json.dump(behavioral_payload, f, indent=4, ensure_ascii=False, default=json_serial)
     logger.info(f"INFO: Exported Cashier Behavioral Risk DNA to {json_behavioral_path}")
-
-    # Generate the unified dashboard
-    report_gen.generate_unified_dashboard(
-      year=args.year, 
-      start_month=args.month,
-      end_month=args.month_end
-    )
 
   print(f"INFO: ⏱️ Total Execution Time: {time.time() - start_time:.2f}s")
 
