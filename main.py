@@ -90,11 +90,11 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
       .dt.hour()
       .alias("hour_of_day"),
 
-      # CONVERT BOOLEANS: Legacy Y/N to Boolean for aggregation
-      pl.col("abortito").eq("Y").alias("is_abort"),
-      pl.col("storno").eq("Y").alias("is_item_void"),
-      pl.col("annullo").eq("Y").alias("is_void"),
-      pl.col("omaggio").eq("Y").alias("is_gift")
+      # Handles 'Y', 'y', '1', or 1 (as int)
+      pl.col("abortito").cast(pl.String).str.to_uppercase().is_in(["Y", "1", "S"]).alias("is_abort"),
+      pl.col("storno").cast(pl.String).str.to_uppercase().is_in(["Y", "1", "S"]).alias("is_item_void"),
+      pl.col("annullo").cast(pl.String).str.to_uppercase().is_in(["Y", "1", "S"]).alias("is_void"),
+      pl.col("omaggio").cast(pl.String).str.to_uppercase().is_in(["Y", "1", "S"]).alias("is_gift")
 
     ]).rename({
       "scontrinoIdentificativo": "receipt_id",

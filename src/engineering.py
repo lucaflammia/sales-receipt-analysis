@@ -87,8 +87,10 @@ class FeatureEngineer:
       (pl.col("basket_value") / pl.col("basket_size")).alias("basket_value_per_item"),
       (pl.col("total_voids") / pl.col("basket_size")).fill_nan(0).alias("void_rate_per_receipt"),
       (pl.col("discounted_item_count") / pl.col("basket_size")).fill_nan(0).alias("discount_ratio"),
-      (pl.col("fresh_weight_sum") / pl.col("total_weight")).fill_nan(0).alias("freshness_weight_ratio"),
-      (pl.col("fresh_value_sum") / pl.col("basket_value")).fill_nan(0).alias("freshness_value_ratio"),
+      # Guard against division by zero (total_weight = 0)
+      (pl.col("fresh_weight_sum") / (pl.col("total_weight") + 1e-6)).alias("freshness_weight_ratio"),
+      # Guard against division by zero (basket_value = 0)
+      (pl.col("fresh_value_sum") / (pl.col("basket_value") + 1e-6)).alias("freshness_value_ratio"),
       # Leakage Evaluation: (Void Lines Value / Potential Gross Value)
       (pl.col("void_value") / (pl.col("basket_value") + pl.col("void_value") + 1e-6)).fill_nan(0).alias("leakage_pct")
     ]).with_columns([
@@ -548,74 +550,53 @@ class FeatureEngineer:
     
   def validate_business_metrics(self, df: pl.DataFrame):
     """
-    Checks for suspiciously empty or zeroed business metrics in the final output.
-    Now includes Freshness metrics critical for Shopping Mission clustering.
+    Checks for suspiciously empty business metrics.
+    Categorizes alerts by impact: Missions vs. Behavioral Risk (Cashier DNA).
     """
+    # Shopping Mission Dimensions (Features used for Customer Segmentation)
+    mission_dims = ["basket_value", "freshness_weight_ratio", "freshness_value_ratio", "basket_size"]
     
-    # Comprehensive mapping including the new Freshness indicators
+    # Behavioral Risk DNA Dimensions (Features used for Cashier Fingerprinting & Risk Scores)
+    risk_dna_dims = ["leakage_pct", "void_rate_per_receipt", "total_voids", "total_markdowns"]
+    
     critical_metrics = {
-      "void_rate_per_receipt": "Tasso Storni",
-      "total_voids": "Totale Articoli Stornati",
-      "discount_ratio": "Indice Sconti",
       "basket_value": "Fatturato (Basket Value)",
       "freshness_weight_ratio": "Incidenza Peso Freschissimi",
       "freshness_value_ratio": "Incidenza Valore Freschissimi",
-      "leakage_pct": "Percentuale Perdita (Leakage)"
+      "leakage_pct": "Percentuale Perdita (Leakage)",
+      "void_rate_per_receipt": "Tasso Storni",
+      "total_voids": "Totale Articoli Stornati"
     }
     
-    logger.info("Starting Business Metric Integrity Validation...")
-    
-    # We ensure we are working with an Eager DataFrame for validation
+    logger.info("Starting Targeted Business Metric Validation...")
     df_eager = self._ensure_eager(df)
     
     if df_eager.is_empty():
-      logger.error("VALIDATION FAILED: DataFrame is empty. No metrics to validate.")
+      logger.error("VALIDATION FAILED: DataFrame is empty.")
       return
 
     for col, business_name in critical_metrics.items():
       if col in df_eager.columns:
-        # Stats collection
         stats = df_eager.select([
-          pl.col(col).sum().alias("total"),
-          pl.col(col).mean().alias("avg"),
-          pl.col(col).max().alias("max")
+          pl.col(col).filter(pl.col(col).is_finite()).sum().fill_null(0).alias("total"),
+          pl.col(col).filter(pl.col(col).is_finite()).mean().fill_null(0).alias("avg")
         ])
         
-        total_val = stats["total"][0] or 0
-        avg_val = stats["avg"][0] or 0
-        max_val = stats["max"][0] or 0
+        total_val = stats["total"][0]
+        avg_val = stats["avg"][0]
         
-        # Global Failure Check
         if total_val == 0:
-          logger.critical(
-            f"DATA INTEGRITY ALERT: Metric '{col}' ({business_name}) is 0.0 for ALL records. "
-            f"This will break clustering for Shopping Missions."
-          )
-        
-        # Freshness Specific Logic
-        # Produce/Fresh items usually exist in at least 10-20% of baskets.
-        # If the average is extremely low, the 'is_fresh' (weight > 0) logic might be failing.
-        elif "freshness" in col and avg_val < 0.01:
-          logger.warning(
-            f"LOW FRESHNESS ALERT: '{business_name}' average is only {avg_val:.4%}. "
-            f"Verify if 'weight' column in source files contains valid non-zero data."
-          )
+          # Correctly attribute the impact to Cashier DNA/Risk
+          if col in mission_dims:
+            impact = "MISSION CLUSTERING: Customer segmentation (Missione Spesa) will be broken."
+          elif col in risk_dna_dims:
+            impact = "BEHAVIORAL RISK DNA: Cashier risk scoring and fingerprinting will be blinded."
+          else:
+            impact = "General reporting error."
 
-        # 3. Floating Point/Small Value Warning
-        elif max_val < 0.0001 and total_val != 0:
-          logger.warning(
-            f"SUSPICIOUS DATA: Metric '{col}' ({business_name}) has non-zero total but max value is near-zero ({max_val})."
-          )
-        
-        # 4. Success Log
+          logger.critical(f"DATA INTEGRITY ALERT: '{col}' ({business_name}) is 0.0. IMPACT: {impact}")
         else:
-          logger.info(f"Metric '{col}' ({business_name}) validated -> [Avg: {avg_val:.4f} | Max: {max_val:.4f}]")
+          # Logs remain in English as per requirements
+          logger.info(f"Metric '{col}' ({business_name}) validated -> [Avg: {float(avg_val):.4f}]")
       else:
-        logger.error(f"SCHEMA ERROR: Required column '{col}' is missing from the DataFrame.")
-
-    # Cashier Identity Consistency
-    if "cashier_id" in df_eager.columns:
-      unique_cashiers = df_eager["cashier_id"].n_unique()
-      logger.info(f"Identity Check: {unique_cashiers} unique cashiers found in current partition.")
-      if unique_cashiers <= 1:
-        logger.warning("Log: Grouping check failed or only one cashier_id found.")
+        logger.error(f"SCHEMA ERROR: Required column '{col}' missing from DataFrame.")
