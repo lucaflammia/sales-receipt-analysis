@@ -5,17 +5,14 @@ import time
 import os
 import argparse
 import datetime
-import webbrowser
-import http.server
-import socketserver
 import glob
 import json
 from src.ingestion import load_config
 from src.engineering import FeatureEngineer
 
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+  level=logging.INFO,
+  format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
@@ -34,117 +31,6 @@ MISSION_MAP = {
   "Daily Fresh Pick": "Fresco Quotidiano"
 }
 
-class ReportGenerator:
-  def __init__(self, base_dir="/workspaces/sales-receipt-analysis"):
-    self.base_dir = base_dir
-    self.html_out_dir = os.path.join(base_dir, "html_reports")
-    self.template_dir = os.path.join(base_dir, "templates")
-    self.reports_dir = os.path.join(base_dir, "reports")
-
-    for directory in [self.html_out_dir, self.reports_dir]:
-      os.makedirs(directory, exist_ok=True)
-
-  def _serve_report(self, filename, start_port=8000):
-    """Starts a local server and keeps it alive to serve all dashboard assets."""
-    os.chdir(self.html_out_dir)
-    handler = http.server.SimpleHTTPRequestHandler
-    
-    port = start_port
-    while port < 8010:
-      try:
-          socketserver.TCPServer.allow_reuse_address = True
-          with socketserver.TCPServer(("", port), handler) as httpd:
-              url = f"http://localhost:{port}/{filename}"
-              print("\n" + "--- REPORT READY (Missione Spesa) ---".center(50))
-              print(f"URL: {url}")
-              print("ACTION: Ctrl+Click to open. Press Ctrl+C in terminal to stop server.")
-              print("-" * 50 + "\n")
-              
-              webbrowser.open(url)
-              
-              # Instead of handle_request(), use serve_forever() 
-              # so the browser can fetch the HTML, CSS, and JSON data fully.
-              try:
-                  httpd.serve_forever()
-              except KeyboardInterrupt:
-                  print("\nStopping server...")
-                  httpd.shutdown()
-          break
-      except OSError:
-          port += 1
-
-  def generate_unified_dashboard(self, year, start_month, end_month=None):
-    """
-    Generates a single, standalone HTML dashboard with two tabs:
-    1. Missione Spesa (Shopping Missions)
-    2. Anomalie Ortofrutta (Produce Anomalies)
-    """
-    m_range = f"M{start_month}" if not end_month or start_month == end_month else f"M{start_month}-M{end_month}"
-    
-    # Paths for localized data sources
-    mission_json_path = os.path.join(self.reports_dir, f"Mission_Insights_{year}.json")
-    anomaly_json_path = os.path.join(self.reports_dir, f"Anomaly_Data_{year}.json") 
-    master_tpl_path = os.path.join(self.template_dir, "dashboard_template.html")
-    
-    output_filename = f"unified_dashboard_{year}_{m_range}.html"
-    output_path = os.path.join(self.html_out_dir, output_filename)
-
-    try:
-      # Initialize Combined Data Structure
-      combined_data = {
-        "metadata": {
-          "anno": year, 
-          "periodo": m_range, 
-          "data_generazione": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
-          "titolo_dashboard": "Dashboard Missione Spesa & Anomalie"
-        },
-        "tabs": {
-          "missioni": {
-            "label": "Risultati Missione Spesa",
-            "data": {}
-          },
-          "anomalie": {
-            "label": "Anomalie Prodotti Ortofrutta",
-            "data": {}
-          }
-        }
-      }
-      
-      # Load and Map Mission Data
-      if os.path.exists(mission_json_path):
-        with open(mission_json_path, "r", encoding="utf-8") as f:
-          # We store this under the Italian key for the dashboard tab
-          combined_data["tabs"]["missioni"]["data"] = json.load(f)
-      
-      # Load and Map Anomaly Data
-      if os.path.exists(anomaly_json_path):
-        with open(anomaly_json_path, "r", encoding="utf-8") as f:
-          combined_data["tabs"]["anomalie"]["data"] = json.load(f)
-
-      # Inject into HTML Template
-      if not os.path.exists(master_tpl_path):
-        raise FileNotFoundError(f"Master template not found at {master_tpl_path}")
-
-      with open(master_tpl_path, "r", encoding="utf-8") as f:
-        template_content = f.read()
-
-      # Serialization for the JS frontend
-      json_payload = json.dumps(combined_data, ensure_ascii=False)
-      final_html = template_content.replace("{{DASHBOARD_DATA_JSON}}", json_payload)
-      
-      # Save Final Dashboard
-      with open(output_path, "w", encoding="utf-8") as f:
-        f.write(final_html)
-
-      # English log as per instructions
-      logger.info(f"SUCCESS: Unified two-tab dashboard generated: {output_filename}")
-      
-      # Serve/Open the report
-      self._serve_report(output_filename)
-
-    except Exception as e:
-      logger.error(f"ERROR: Failed to generate unified dashboard: {e}", exc_info=True)
-
 def log_resource_usage(stage: str):
   process = psutil.Process(os.getpid())
   mem = process.memory_info().rss / (1024 * 1024)
@@ -155,31 +41,6 @@ def find_partition_path(area_root, year, month):
   matches = glob.glob(pattern, recursive=True)
   dirs = [m for m in matches if os.path.isdir(m)]
   return dirs[0] if dirs else None
-
-def export_to_json(monthly_data_list, export_path):
-  """
-  Generates a JSON feed for LLM consumption.
-  """
-  json_output = {
-    "metadata": {
-      "project": "Missione Spesa",
-      "analysis_date": time.strftime("%Y-%m-%d"),
-    },
-    "monthly_insights": []
-  }
-
-  for entry in monthly_data_list:
-    df_pd = entry['data'].to_pandas()
-    df_pd["shopping_mission"] = df_pd["shopping_mission"].replace(MISSION_MAP)
-    
-    json_output["monthly_insights"].append({
-      "period": entry['period'],
-      "results": df_pd.to_dict(orient="records")
-    })
-
-  with open(export_path, 'w', encoding='utf-8') as f:
-    json.dump(json_output, f, indent=4, ensure_ascii=False)
-  logger.info(f"📁 LLM-Ready JSON saved: {export_path}")
 
 def process_partition(year, month, config, feature_engineer, days=None, fit_global=False):
   env_config = config[config["environment"]]
@@ -194,7 +55,7 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
   
   if not base_data_path:
     logger.warning(f"⚠️ Path not found for Year={year}, Month={month}")
-    return
+    return None, None, None, None, None
 
   logger.info(f"📂 Found Data: {base_data_path}")
 
@@ -217,10 +78,24 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
     # Load LazyFrame
     raw_data_lazy = pl.scan_parquet(all_files)
     
-    # Schema Normalization
+    # Processing the lazy frame with schema-aligned mappings
     raw_data_lazy = raw_data_lazy.with_columns([
+      # Cast identifiers to String for join stability
       pl.col("scontrinoIdentificativo").cast(pl.String),
-      pl.col("articoloCodice").cast(pl.String)
+      pl.col("articoloCodice").cast(pl.String),
+
+      # EXTRACT HOUR OF DAY: Parsing 'scontrinoOra' (HH:mm) 
+      # This allows for mean() and std() calculations in the fingerprint
+      pl.col("scontrinoOra").str.strptime(pl.Time, format="%H:%M")
+      .dt.hour()
+      .alias("hour_of_day"),
+
+      # Handles 'Y', 'y', '1', or 1 (as int)
+      pl.col("abortito").cast(pl.String).str.to_uppercase().is_in(["Y", "1", "S"]).alias("is_abort"),
+      pl.col("storno").cast(pl.String).str.to_uppercase().is_in(["Y", "1", "S"]).alias("is_item_void"),
+      pl.col("annullo").cast(pl.String).str.to_uppercase().is_in(["Y", "1", "S"]).alias("is_void"),
+      pl.col("omaggio").cast(pl.String).str.to_uppercase().is_in(["Y", "1", "S"]).alias("is_gift")
+
     ]).rename({
       "scontrinoIdentificativo": "receipt_id",
       "totaleLordo": "line_total",
@@ -229,8 +104,13 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
       "scontrinoData": "date_str",
       "scontrinoOra": "time_str",
       "articoloCodice": "product_id",
-      "cassiereCodice": "cashier_id"
+      "cassiereCodice": "cashier_id",
+      "formaPagamentoCodice": "payment_method_code",
+      "totaleSconti": "total_discounts",
+      "puntiRitiro": "points_redeemed"
     })
+
+     # --- SHOPPING MISSION ANALYSIS: TRADITIONAL MISSION SEGMENTATION ------
 
     # Feature Engineering
     raw_data_lazy = raw_data_lazy.with_columns([
@@ -251,6 +131,9 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
     # Feature Aggregation
     df_lazy = feature_engineer.extract_canonical_features(raw_data_lazy)
     df = df_lazy.collect()
+
+    # Check validation of metrics
+    feature_engineer.validate_business_metrics(df)
 
     # Clean data for ALL subsequent ML steps
     mission_features = ["basket_size", "basket_value_per_item", "freshness_weight_ratio"]
@@ -289,11 +172,10 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
       fit_global=fit_global
     )
 
-    # --- ANOMALY SEVERITY AUDIT ---
     # Flagging B2B/Outliers for separate technical audit
-    anomalies = df.filter(pl.col("shopping_mission") == "B2B / Bulk Outlier")
+    b2b_anomalies = df.filter(pl.col("shopping_mission") == "B2B / Bulk Outlier")
 
-    if not anomalies.is_empty():
+    if not b2b_anomalies.is_empty():
       audit_path = f"audit/b2b_audit_{year}_{month}.csv"
       os.makedirs("audit", exist_ok=True)
       
@@ -301,48 +183,13 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
       avg_rev = df["basket_value"].mean()
       std_rev = df["basket_value"].std()
       
-      anomalies = anomalies.with_columns([
+      b2b_anomalies = b2b_anomalies.with_columns([
         ((pl.col("basket_value") - avg_rev) / std_rev).alias("anomaly_score"),
         pl.lit(f"{year}-{month}").alias("period")
       ])
       
-      anomalies.write_csv(audit_path)
-      logger.warning(f"🚩 {len(anomalies)} B2B anomalies detected! Audit report saved to: {audit_path}")
-    # ----------------------------------
-
-    # ANOMALY DETECTION (Cassa & Ortofrutta)
-
-    # 1. Produce Weighing Errors (Ortofrutta)
-    # Pass raw line-item data to check price/weight ratios using MAD
-    logger.info("Running Produce (Ortofrutta) Weight Audit...")
-    produce_anomalies = feature_engineer.detect_produce_weighing_errors(raw_data_lazy.collect())
-
-    # Cashier Integrity Audit (Sweethearting)
-    logger.info("Running Cashier Integrity Audit (Sweethearting)...")
-
-    # Ensure cashier_id exists before processing
-    if "cashier_id" not in df.columns:
-      logger.warning("Log: cashier_id not found in aggregated features, forcing N/A")
-      df = df.with_columns(pl.lit("N/A").alias("cashier_id"))
-
-    # Run the anomaly detection (Z-Score & Isolation Forest)
-    df = feature_engineer.detect_cashier_anomalies(df)
-
-    # Filter for Report (Registro Audit)
-    # Score -1 (outlier flag) or Z > 1.5 (visibility threshold)
-    cashier_alerts = df.select([
-      "cashier_id", 
-      "cashier_anomaly_score", 
-      "cashier_z_score"
-    ]).unique().filter(
-      (pl.col("cashier_anomaly_score") == -1) | (pl.col("cashier_z_score") > 1.5)
-    )
-
-    # Logging results
-    if cashier_alerts.is_empty():
-      logger.info("Log: No significant cashier anomalies detected.")
-    else:
-      logger.info(f"Log: ALERT! {cashier_alerts.height} cashiers flagged for review.")
+      b2b_anomalies.write_csv(audit_path)
+      logger.warning(f"🚩 {len(b2b_anomalies)} B2B anomalies detected! Audit report saved to: {audit_path}")
 
     # Anomaly Detection (Post-Clustering)
     # Using the same features to see which specific missions contain outliers
@@ -363,7 +210,7 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
       df = feature_engineer.add_anomaly_score(df, features=list(consensus.keys()))
       df = feature_engineer.map_severity(df)
 
-    # Generate Strategic Dashboard Insights
+    # --- Generate Strategic Dashboard Insights ---
     grand_total_revenue = df["basket_value"].sum()
     total_receipts = df.height
 
@@ -382,34 +229,71 @@ def process_partition(year, month, config, feature_engineer, days=None, fit_glob
       .sort("revenue_share_pct", descending=True)
     )
 
-    plot_insights = insights.clone().to_pandas()
-    plot_insights["shopping_mission"] = plot_insights["shopping_mission"].replace(MISSION_MAP)
-
-    # Visualization - Ensure the path and labels are ready
-    os.makedirs("plots", exist_ok=True)
-    feature_engineer.plot_mission_impact(
-      plot_insights,
-      path=os.path.join("plots", f"impact_{year}_{month}.png"),
-      title=f"Analisi Missioni: {IT_MONTHS.get(f'{month:02d}', 'Mese')} {year}"
-    )
-
-    # Export
-    export_root = os.path.join(env_config["processed_data_path"], f"area={area_code}", f"year={year}", f"month={month}")
-    if days:
-      export_root = os.path.join(export_root, f"days_{min(days)}_to_{max(days)}")
-
-    os.makedirs(export_root, exist_ok=True)
-    df.write_parquet(os.path.join(export_root, "canonical_baseline.parquet"))
-    
     logger.info("\n" + "💰 STRATEGIC MISSION REPORT".center(60, "="))
     print(insights)
     logger.info("="*60)
+    
+    # ANOMALY DETECTION (Cassa & Ortofrutta)
 
-    return insights, produce_anomalies, cashier_alerts
+    # Produce Weighing Errors (Ortofrutta)
+    # Pass raw line-item data to check price/weight ratios using MAD
+    logger.info("Running Produce (Ortofrutta) Weight Audit...")
+    produce_anomalies = feature_engineer.detect_produce_weighing_errors(raw_data_lazy.collect())
+
+    # Cashier Integrity Audit (Cashier Sweethearting Alerts)
+    logger.info("Running Cashier Integrity Audit (Cashier Sweethearting Alerts)...")
+
+    # Ensure cashier_id exists before processing
+    if "cashier_id" not in df.columns:
+      logger.warning("Log: cashier_id not found in aggregated features, forcing N/A")
+      df = df.with_columns(pl.lit("N/A").alias("cashier_id"))
+
+    # Run the anomaly detection (Z-Score & Isolation Forest)
+    df = feature_engineer.detect_cashier_sweethearting_anomalies(df)
+
+    # Filter for Report (Registro Audit)
+    # Score -1 (outlier flag) or Z > 1.5 (visibility threshold)
+    cashier_sweethearting_anomalies = df.select([
+      "cashier_id", 
+      "cashier_sweethearting_anomaly_score", 
+      "cashier_sweethearting_z_score"
+    ]).unique().filter(
+      (pl.col("cashier_sweethearting_anomaly_score") == -1) | (pl.col("cashier_sweethearting_z_score") > 1.5)
+    )
+
+    # Logging results
+    if cashier_sweethearting_anomalies.is_empty():
+      logger.info("Log: No significant cashier sweethearting anomalies detected.")
+    else:
+      logger.info(f"Log: ALERT! {cashier_sweethearting_anomalies.height} cashiers flagged for review.")
+
+    # --- Cashier Behavioral Fingerprinting & Margin Leakage Analysis ---
+    logger.info("AI STRATEGY: Starting Cashier Behavioral Fingerprinting...")
+    # We collect here as fingerprinting requires aggregation across the whole partition
+    df_raw = raw_data_lazy.collect()
+    
+    fingerprint_df = feature_engineer.extract_cashier_fingerprint(df_raw)
+    monthly_cashier_fp_anomalies = feature_engineer.detect_behavioral_anomalies(fingerprint_df)
+
+    # Filter high-risk alerts for the report (Italian names used in output table)
+    monthly_cashier_fp_anomalies = monthly_cashier_fp_anomalies.filter(pl.col("risk_score") > 0.5).select([
+      pl.col("cashier_id").alias("Codice Cassiere"),
+      pl.col("risk_score").round(2).alias("Score Rischio Comportamentale"),
+      pl.col("cash_reliance_ratio").round(3).alias("Indice Uso Contanti"),
+      pl.col("void_rate_per_receipt").round(3).alias("Tasso Storni")
+    ])
+
+    logger.info(f"Cashier Behavioral Fingerprinting complete. {monthly_cashier_fp_anomalies.height} high-risk cashiers detected.")
+
+    margin_leakage_data = feature_engineer.run_margin_leakage_radar(df_raw)
+
+    logger.info(f"Margin Leakage Analysis complete. {margin_leakage_data.height} cashiers analyzed.")
+
+    return insights, produce_anomalies, cashier_sweethearting_anomalies, monthly_cashier_fp_anomalies, margin_leakage_data
 
   except Exception as e:
     logger.error(f"❌ Error for {year}-{month}: {e}", exc_info=True)
-    return None, None, None
+    return None, None, None, None, None
 
 def main():
   parser = argparse.ArgumentParser()
@@ -422,12 +306,13 @@ def main():
 
   start_time = time.time()
   config = load_config()
-  report_gen = ReportGenerator()
   
   # Storage for the Global Summary
   global_insights = []
-  global_anomalies = []
-  global_cashier_alerts = []
+  global_produce_anomalies = []
+  global_cashier_sweethearting_anomalies = []
+  global_cashier_fp_anomalies = []
+  global_margin_leakage = []
   
   start_month = args.month
   end_month = args.month_end or args.month
@@ -442,10 +327,10 @@ def main():
     current_fe = FeatureEngineer()
     
     # Process monthly data
-    monthly_insight, monthly_anomalies, monthly_cashier_alerts = process_partition(
+    monthly_insight, monthly_produce_anomalies, monthly_cashier_sweethearting_anomalies, monthly_cashier_fp_anomalies, monthly_margin_leakage = process_partition(
       args.year, m, config, current_fe, 
       days=target_days, 
-      fit_global=True # Usually safer to fit per-month for produce weighing
+      fit_global=False # If True is to fit per-month models
     )
 
     # Check if the partition actually returned data
@@ -459,75 +344,173 @@ def main():
         "data": monthly_insight
       })
 
-    if monthly_anomalies is not None:
+    if monthly_produce_anomalies is not None:
       # Convert Polars to Dict for JSON export
-      global_anomalies.append({
+      global_produce_anomalies.append({
         "period": f"{args.year}-{m:02d}",
-        "details": monthly_anomalies.to_dicts()
+        "details": monthly_produce_anomalies.to_dicts()
       })
 
-    if monthly_cashier_alerts is not None:
-      global_cashier_alerts.append({
+    if monthly_cashier_sweethearting_anomalies is not None:
+      global_cashier_sweethearting_anomalies.append({
         "period": f"{args.year}-{m:02d}",
-        "details": monthly_cashier_alerts.to_dicts()
+        "details": monthly_cashier_sweethearting_anomalies.to_dicts()
       })
+    
+      if monthly_cashier_fp_anomalies is not None:
+        global_cashier_fp_anomalies.append({
+          "period": f"{args.year}-{m:02d}",
+          "details": monthly_cashier_fp_anomalies.to_dicts()
+        })
+
+      if monthly_margin_leakage is not None:
+        global_margin_leakage.append({
+          "period": f"{args.year}-{m:02d}",
+          "details": monthly_margin_leakage.to_dicts()
+        })
     
     log_resource_usage(f"Completed Month {m}")
 
   # FINAL REPORT GENERATION
   if global_insights:
     # Define Paths
-    json_mission_path = os.path.join("reports", f"Mission_Insights_{args.year}.json")
-    json_anomaly_path = os.path.join("reports", f"Anomaly_Data_{args.year}.json")
+    m_range = f"M{start_month}" if not end_month or start_month == end_month else f"M{start_month}-M{end_month}"
+    json_mission_path = os.path.join("reports", f"Strategic_Mission_Intelligence_{args.year}_{m_range}.json")
+    json_integrity_path = os.path.join("reports", f"Store_Integrity_Audit_Report_{args.year}_{m_range}.json")
+    json_behavioral_path = os.path.join("reports", f"Cashier_Behavioral_Risk_DNA_{args.year}_{m_range}.json")
     
-    # Save JSON Feed first (System data)
-    print(f"INFO: Exporting JSON feed to {json_mission_path}")
-    export_to_json(global_insights, json_mission_path)
-
     def json_serial(obj):
       """JSON serializer for objects not serializable by default json code"""
       if isinstance(obj, (datetime.date, datetime.datetime)):
         return obj.isoformat()
       raise TypeError(f"Type {type(obj)} not serializable")
 
-    def sanitize_anomalies(anomaly_list):
+    def map_and_sanitize(anomaly_list, key_map):
+      """Rename keys in italian and serialize time periods"""
       sanitized = []
       for entry in anomaly_list:
-        # Ensure we handle the details list safely
         details = entry.get("details", [])
-        
-        # If it's a list of dicts (from Polars to_dicts())
+        mapped_details = []
         if isinstance(details, list):
           for row in details:
-            for key, value in row.items():
-              # Convert dates/datetimes to ISO strings
-              if isinstance(value, (datetime.date, datetime.datetime)):
-                row[key] = value.isoformat()
-        
-        sanitized.append({
-          "period": entry["period"],
-          "details": details
-        })
+            new_row = {}
+            for k, v in row.items():
+              # Rinomina se presente nel mapping, altrimenti mantiene originale
+              new_key = key_map.get(k, k)
+              val = v.isoformat() if isinstance(v, (datetime.date, datetime.datetime)) else v
+              new_row[new_key] = val
+            mapped_details.append(new_row)
+        sanitized.append({"periodo": entry["period"], "dettagli": mapped_details})
       return sanitized
-
-    # Aggregate the payload
-    anomaly_payload = {
-      "cashier_anomalies": sanitize_anomalies(global_cashier_alerts),
-      "produce_alerts": sanitize_anomalies(global_anomalies)
-    }
-
-    # Save with a default handler as a secondary safety net
-    with open(json_anomaly_path, 'w', encoding='utf-8') as f:
-      json.dump(anomaly_payload, f, indent=4, ensure_ascii=False, default=json_serial)
     
-    logger.info(f"INFO: Exported Anomaly data to {json_anomaly_path}")
+    mission_payload = []
+    for entry in global_insights:
+      df_pd = entry['data'].to_pandas()
+      df_pd["shopping_mission"] = df_pd["shopping_mission"].replace(MISSION_MAP)
+      # Ridenominazione colonne per il JSON
+      df_pd = df_pd.rename(columns={
+        "shopping_mission": "Missione Spesa",
+        "receipt_count": "Numero Scontrini",
+        "total_mission_revenue": "Fatturato Totale Missione",
+        "avg_trip_value": "Valore Medio Spesa",
+        "avg_items_per_trip": "Media Articoli per Spesa",
+        "revenue_share_pct": "Percentuale Fatturato",
+        "traffic_share_pct": "Percentuale Traffico"
+      })
+      mission_payload.append({"periodo": entry["period"], "risultati": df_pd.to_dict(orient="records")})
 
-    # Generate the unified dashboard
-    report_gen.generate_unified_dashboard(
-      year=args.year, 
-      start_month=args.month,
-      end_month=args.month_end
-    )
+    mission_final = {
+      "metadata": {
+        "titolo": "Intelligence Strategica Missioni di Spesa",
+        "descrizione": "Classificazione dei viaggi di spesa basata su algoritmi di segmentazione del paniere.",
+        "arricchimento_business": "Questo report permette di ottimizzare il layout del punto vendita e le promozioni basandosi sul comportamento reale d'acquisto. Identificare la prevalenza di 'Missioni di Scorta' rispetto a 'Pasto Pronto' guida le decisioni sullo spazio espositivo e l'assortimento dei freschi, massimizzando il valore del carrello medio.",
+        "dizionario_dati": {
+          "periodo": "L'intervallo temporale (anno-mese) dell'analisi.",
+          "Missione Spesa": "Etichetta del cluster (es. 'Spesa di Scorta', 'Pasto Pronto', 'Integrazione Freschi') che identifica lo scopo del cliente.",
+          "Numero Scontrini": "Volume totale di atti d'acquisto riconducibili a quella specifica missione.",
+          "Fatturato Totale Missione": "Somma totale incassata per tutti gli scontrini appartenenti a quel cluster.",
+          "Valore Medio Spesa": "Importo medio (Scontrino Medio) per questa missione.",
+          "Media Articoli per Spesa": "Numero medio di referenze (pezzi) acquistate per ogni atto d'acquisto.",
+          "Percentuale Fatturato": "Quanto contribuisce questa missione al fatturato totale del negozio in termini percentuali.",
+          "Percentuale Traffico": "Quanto contribuisce questa missione al numero totale di clienti (scontrini) che entrano in negozio."
+        }
+      },
+      "insight_mensili": mission_payload
+    }
+    with open(json_mission_path, 'w', encoding='utf-8') as f:
+      json.dump(mission_final, f, indent=4, ensure_ascii=False, default=json_serial)
+
+    # Export Integrity Audit (Sweethearting & Produce)
+    integrity_map = {
+      "cashier_id": "Codice Cassiere",
+      "cashier_sweethearting_anomaly_score": "Score Anomalia Sweethearting",
+      "cashier_sweethearting_z_score": "Z-Score Deviazione",
+      "product_id": "Codice Prodotto",
+      "weight": "Peso Rilevato",
+      "line_total": "Totale Riga",
+      "price_per_unit": "Prezzo per Unità",
+      "is_anomaly": "Flag Anomalia"
+    }
+        
+    integrity_payload = {
+      "metadata": {
+        "titolo": "Audit Integrità e Prevenzione Frodi",
+        "descrizione": "Monitoraggio tecnico delle scansioni e della correttezza dei pesi alla vendita.",
+        "arricchimento_business": "Strumento critico per la Loss Prevention. L'analisi incrociata tra anomalie di pesatura (ortofrutta) e punteggi di sweethearting permette di identificare perdite occulte che non emergono dai normali inventari. Consente interventi mirati di formazione o audit interno sui dipendenti con i profili di rischio più elevati.",
+        "dizionario_dati": {
+          "periodo": "L'intervallo temporale (anno-mese) a cui si riferisce l'analisi.",
+          "Codice Cassiere": "Identificativo univoco dell'operatore sospettato di anomalie.",
+          "Score Anomalia Sweethearting": "Valore binario o continuo derivato dal modello ML. Indica la probabilità di 'Sweethearting' (regalare merce scansionando prodotti a basso costo al posto di quelli costosi).",
+          "Z-Score Deviazione": "Punteggio statistico che indica di quante deviazioni standard il cassiere è lontano dalla media. Sopra 2.0 è considerato un alert critico.",
+          "Codice Prodotto": "Codice PLU o EAN dell'articolo ortofrutticolo che ha generato l'alert.",
+          "Peso Rilevato": "Il peso in kg registrato dalla bilancia integrata nella cassa.",
+          "Totale Riga": "Il prezzo finale calcolato per quel prodotto nella specifica transazione.",
+          "Prezzo per Unità": "Il prezzo al kg (o per pezzo) applicato dal sistema.",
+          "Flag Anomalia": "Indicatore booleano (Sì/No) che conferma se il rapporto peso/prezzo è fuori dai parametri di tolleranza impostati."
+        }
+      },
+      "anomalie_sweethearting_cassieri": map_and_sanitize(global_cashier_sweethearting_anomalies, integrity_map),
+      "alert_pesatura_ortofrutta": map_and_sanitize(global_produce_anomalies, integrity_map)
+    }
+    with open(json_integrity_path, 'w', encoding='utf-8') as f:
+      json.dump(integrity_payload, f, indent=4, ensure_ascii=False, default=json_serial)
+    logger.info(f"INFO: Exported Store Integrity Audit to {json_integrity_path}")
+    
+    # Export Behavioral Risk DNA (Fingerprints & Leakage)
+    behavioral_map = {
+      "cashier_id": "Codice Cassiere",
+      "risk_score": "Score Rischio Comportamentale",
+      "cash_reliance_ratio": "Indice Uso Contanti",
+      "void_rate_per_receipt": "Tasso Storni",
+      "total_markdowns": "Totale Sconti e Ribassi",
+      "total_voids": "Totale Articoli Stornati",
+      "captured_revenue": "Fatturato Acquisito",
+      "leakage_pct": "Percentuale Perdita (Leakage)"
+    }
+        
+    behavioral_payload = {
+      "metadata": {
+        "titolo": "DNA Comportamentale Cassieri e Radar Margine",
+        "descrizione": "Profilazione del rischio operativo e analisi dell'erosione del margine per operatore.",
+        "arricchimento_business": "Analizza l'efficienza operativa e la disciplina di cassa. Il calcolo della 'Percentuale Perdita (Leakage)' quantifica direttamente l'impatto economico degli errori o delle irregolarità procedurali. Questo report è fondamentale per identificare colli di bottiglia operativi e proteggere il margine netto del punto vendita attraverso il monitoraggio dei flussi di contante e storni.",
+        "dizionario_dati": {
+          "periodo": "L'intervallo temporale (anno-mese) a cui si riferisce l'analisi.",
+          "Codice Cassiere": "Identificativo univoco del dipendente nel sistema POS.",
+          "Score Rischio Comportamentale": "Indice sintetico (0-1) calcolato tramite algoritmi di clustering. Più è alto, più il comportamento del cassiere devia dalla norma del negozio.",
+          "Indice Uso Contanti": "Rapporto tra transazioni in contanti e totale transazioni. Valori estremi possono indicare tentativi di manipolazione del fondo cassa.",
+          "Tasso Storni": "Frequenza media di cancellazione di righe dallo scontrino. Un tasso alto è spesso correlato a merce consegnata ma non pagata (pass-outs).",
+          "Totale Sconti e Ribassi": "Valore monetario totale degli sconti manuali applicati dal cassiere nel periodo.",
+          "Totale Articoli Stornati": "Conteggio assoluto degli articoli cancellati dopo essere stati scansionati.",
+          "Fatturato Acquisito": "Il volume totale di vendite nette (incassate correttamente) gestite dal cassiere.",
+          "Percentuale Perdita (Leakage)": "Stima percentuale del fatturato perso a causa di anomalie operative (storni eccessivi, sconti non giustificati)."
+        }
+      },
+      "fingerprint_comportamentale_cassieri": map_and_sanitize(global_cashier_fp_anomalies, behavioral_map),
+      "analisi_perdita_margine": map_and_sanitize(global_margin_leakage, behavioral_map)
+    }
+    with open(json_behavioral_path, 'w', encoding='utf-8') as f:
+      json.dump(behavioral_payload, f, indent=4, ensure_ascii=False, default=json_serial)
+    logger.info(f"INFO: Exported Cashier Behavioral Risk DNA to {json_behavioral_path}")
 
   print(f"INFO: ⏱️ Total Execution Time: {time.time() - start_time:.2f}s")
 

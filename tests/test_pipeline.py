@@ -1,9 +1,6 @@
 import polars as pl
 import logging
-import os
-import json
 from src.engineering import FeatureEngineer
-from main import export_to_json
 
 # Logs in English per "Missione Spesa" rules
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -11,80 +8,81 @@ logger = logging.getLogger(__name__)
 
 def test_mission_segmentation_pipeline():
   """
-  Integration Test: Verifies Mission Clustering and Global Cashier Peer-Group Auditing.
+  Integration Test: Verifies Mission Clustering and Behavioral Risk DNA (Cashier DNA) Auditing.
   """
-  logger.info("Starting Missione Spesa full integration test...")
+  logger.info("Starting Missione Spesa / Cashier DNA full integration test...")
 
-  # 1. Setup Mock Data with significant Population Variance
-  # We need multiple cashiers so the 'Global Mean' isn't just one person's average.
+  # INCREASE POPULATION: Add 5 more normal cashiers to lower the global standard deviation
+  normal_cashiers = [f"C_NORM_{i}" for i in range(5)]
+  all_cashiers = ["C_NORMAL"] * 10 + ["C_SUSPECT"] * 2 + ["C_OTHER"] * 2
+  for nc in normal_cashiers:
+    all_cashiers += [nc] * 2
+
   data = {
-    "receipt_id": [f"RN{i}" for i in range(10)] + ["RS1", "RS2", "RO1", "RO2"],
-    "cashier_id": ["C_NORMAL"] * 10 + ["C_SUSPECT"] * 2 + ["C_OTHER"] * 2,
-    "line_total": [10.0] * 10 + [50.0, 60.0] + [15.0, 15.0],
-    "weight": [0.5] * 14,
-    "product_id": ["PROD_A"] * 14,
-    "date_str": ["20240601"] * 14,
-    "time_str": ["100000"] * 14,
-    "store_id": ["S_01"] * 14,
-    "selfScanning": ["N"] * 14,
-    "is_discounted": [0] * 14
+    "receipt_id": [f"R_{i}" for i in range(len(all_cashiers))],
+    "cashier_id": all_cashiers,
+    "line_total": [10.0] * len(all_cashiers),
+    "weight": [0.5] * len(all_cashiers),
+    "product_id": ["PROD_A"] * len(all_cashiers),
+    "date_str": ["20260205"] * len(all_cashiers),
+    "time_str": ["100000"] * len(all_cashiers),
+    "store_id": ["S_01"] * len(all_cashiers),
+    "selfScanning": ["N"] * len(all_cashiers),
+    "is_discounted": [0] * len(all_cashiers),
+    "is_item_void": [False] * len(all_cashiers),
+    "is_abort": [False] * len(all_cashiers)
   }
   
-  lf = pl.LazyFrame(data)
-
-  # Enrichment
-  # We introduce variance in C_NORMAL to ensure population std_dev > 0
-  lf = lf.with_columns([
-    pl.when(pl.col("weight") > 0)
-    .then(pl.col("line_total") / pl.col("weight"))
-    .otherwise(pl.col("line_total"))
-    .alias("avg_unit_price"),
+  # Create LazyFrame and add missing columns for FeatureEngineer requirements
+  lf = pl.LazyFrame(data).with_columns([
     (pl.col("line_total") * 0.05).alias("price_delta"),
-  ]).with_columns([
-    pl.when(pl.col("cashier_id") == "C_SUSPECT")
-    .then(pl.lit(0.95)) # Extreme outlier
-    .when(pl.col("receipt_id") == "RN1") 
-    .then(pl.lit(0.10)) # Slight variance for Normal
-    .otherwise(pl.lit(0.02))
-    .alias("discount_ratio")
+    pl.lit(5.0).alias("avg_unit_price"),
+    pl.col("line_total").alias("total_discounts") # Required for Leakage Radar
   ])
 
   fe = FeatureEngineer(random_state=42)
 
-  # Aggregation
-  logger.info("Aggregating features...")
-  # Extracting features usually groups by receipt_id
+  # Feature Extraction & Aggregation
+  logger.info("Aggregating features and calculating ratios...")
   agg_lf = fe.extract_canonical_features(lf)
-
-  # MANUALLY ADD discount_ratio to the aggregated receipt-level data 
-  # if extract_canonical_features drops it.
   df = agg_lf.collect()
 
-  # FORCE the variance into the collected dataframe
-  # This ensures that no matter what extract_canonical_features did,
-  # the audit logic receives the correct test data.
+  # Business Metric Validation (Testing the Inf/Zero fix)
+  # This will trigger the logger.info for validated metrics
+  fe.validate_business_metrics(df)
+
+  # Cashier Behavioral Risk DNA Logic
+  logger.info("Testing Behavioral Risk DNA (Sweethearting) Audit...")
+  
+  # Force specific discount ratios to test the Z-Score engine
   df = df.with_columns(
     pl.when(pl.col("cashier_id") == "C_SUSPECT").then(0.95)
-    .when(pl.col("cashier_id") == "C_OTHER").then(0.40) # Added distinct middle value
-    .otherwise(0.02).alias("discount_ratio")
+    .when(pl.col("cashier_id") == "C_OTHER").then(0.05)
+    .otherwise(0.01).alias("discount_ratio")
   )
 
-  # DIAGNOSTIC: Check the variance before calling the anomaly detector
-  variance_check = df.select(pl.col("discount_ratio").std()).item()
-  logger.info(f"Global discount variance before audit: {variance_check}")
+  # Run the specific sweethearting detector
+  df = fe.detect_cashier_sweethearting_anomalies(df)
 
-  # Peer-Group Anomaly Detection
-  logger.info("Testing Cashier Integrity Audit...")
-  df = fe.detect_cashier_anomalies(df)
-
-  # Calculate scores manually for logging if the test fails
-  unique_scores = df.select(["cashier_id", "cashier_z_score"]).unique().sort("cashier_z_score")
-  logger.info(f"Audit Results Table:\n{unique_scores}")
-
-  suspect_score = df.filter(pl.col("cashier_id") == "C_SUSPECT")["cashier_z_score"][0]
+  # 5. DIAGNOSTIC: Risk DNA Results
+  unique_scores = df.select([
+    "cashier_id", 
+    "cashier_sweethearting_z_score", 
+    "cashier_sweethearting_anomaly_score"
+  ]).unique().sort("cashier_sweethearting_z_score")
   
-  # Asserting that the suspect is significantly higher than the average
-  assert suspect_score > 1.0, f"Critical: C_SUSPECT Z-score is {suspect_score}. The audit logic is likely not comparing against the global mean."
+  logger.info(f"Cashier Risk DNA Results:\n{unique_scores}")
+
+  # Assertions
+  suspect_data = df.filter(pl.col("cashier_id") == "C_SUSPECT").head(1)
+  suspect_z = suspect_data["cashier_sweethearting_z_score"][0]
+  suspect_flag = suspect_data["cashier_sweethearting_anomaly_score"][0]
+
+  # Verify suspect is caught (Z > 1.5 and flag is -1)
+  assert suspect_z > 1.5, f"DNA Failure: C_SUSPECT Z-score is {suspect_z}, too low for peer outlier."
+  assert suspect_flag == -1, "DNA Failure: C_SUSPECT was not flagged as an anomaly (expected -1)."
+  
+  logger.info("SUCCESS: Integration test passed. Risk DNA and Validation logic are stable.")
 
 if __name__ == "__main__":
   test_mission_segmentation_pipeline()
